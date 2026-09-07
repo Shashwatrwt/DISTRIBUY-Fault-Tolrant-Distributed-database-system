@@ -13,7 +13,7 @@ PostgreSQL connections, TCP communication, logical replication, locking, two-pha
 A normal e-commerce app looks like this:
 
 ```text
-Users → One Server → One Database
+Users → One Server → One Database(cannot handle when the users becomes large)
 ```
 
 This works for a college demo with 10 users, but it has one fatal flaw: if that database crashes, the entire website goes down. This is a single point of failure.
