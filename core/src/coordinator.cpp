@@ -38,6 +38,15 @@ public:
         return config_;
     }
 
+    // Exposes the raw connection so the Coordinator can issue the
+    // PREPARE TRANSACTION / COMMIT PREPARED / ROLLBACK PREPARED commands
+    // needed for 2PC. These don't fit the simple execute()/query() helpers
+    // because a prepared transaction is deliberately left "hanging" between
+    // Phase 1 and Phase 2, rather than committed inside one call.
+    pqxx::connection& raw_connection() {
+        return *conn_;
+    }
+
     // Runs a SELECT against this node's table and returns the row count,
     // printing each row for visibility during the demo.
     std::size_t query_domain_table() {
@@ -125,6 +134,113 @@ public:
                    << (alive_count >= quorum ? "AVAILABLE" : "UNAVAILABLE") << "\n\n";
     }
 
+    // --- Two-Phase Commit: place an order across the Orders node and the
+    // --- Products node, so the two writes either both happen or neither does.
+    //
+    // Phase 1 (Prepare): insert the order row on the Orders node, and check
+    // + decrement stock on the Products node, then PREPARE TRANSACTION on
+    // whichever ones succeed.
+    //
+    // Phase 2 (Commit/Abort): if BOTH nodes prepared successfully, COMMIT
+    // PREPARED on both. If either failed to prepare, ROLLBACK PREPARED on
+    // whichever one did succeed, so we never end up with stock reduced but
+    // no order recorded (or vice versa).
+    bool place_order(int user_id, int product_id, int quantity) {
+        auto orders_it = connections_.find(NodeDomain::Orders);
+        auto products_it = connections_.find(NodeDomain::Products);
+
+        if (orders_it == connections_.end() || products_it == connections_.end()) {
+            std::cout << "  [2PC] Missing node registration for Orders or Products.\n";
+            return false;
+        }
+
+        NodeConnection& orders_conn = *orders_it->second;
+        NodeConnection& products_conn = *products_it->second;
+
+        if (!orders_conn.is_alive() || !products_conn.is_alive()) {
+            std::cout << "  [2PC] Aborting: one or more required nodes are unreachable "
+                       << "(Orders: " << (orders_conn.is_alive() ? "up" : "DOWN")
+                       << ", Products: " << (products_conn.is_alive() ? "up" : "DOWN") << ")\n";
+            return false;
+        }
+
+        // Unique transaction IDs per participant, as Postgres 2PC requires
+        // a distinct name per prepared transaction per connection.
+        static int txn_counter = 0;
+        ++txn_counter;
+        std::string txn_orders = "order_" + std::to_string(txn_counter) + "_orders";
+        std::string txn_products = "order_" + std::to_string(txn_counter) + "_products";
+
+        bool orders_prepared = false;
+        bool products_prepared = false;
+
+        std::cout << "\n[2PC] Phase 1: PREPARE\n";
+
+        // --- Prepare on Orders node ---
+        try {
+            pqxx::work txn(orders_conn.raw_connection());
+            txn.exec(
+                "INSERT INTO orders (user_id, product_id, quantity, status) VALUES (" +
+                std::to_string(user_id) + ", " + std::to_string(product_id) + ", " +
+                std::to_string(quantity) + ", 'pending')"
+            );
+            txn.exec("PREPARE TRANSACTION '" + txn_orders + "'");
+            orders_prepared = true;
+            std::cout << "  Orders node: PREPARE succeeded\n";
+        } catch (const std::exception& e) {
+            std::cout << "  Orders node: PREPARE failed (" << e.what() << ")\n";
+        }
+
+        // --- Prepare on Products node (check stock, then decrement) ---
+        try {
+            pqxx::work txn(products_conn.raw_connection());
+            pqxx::result r = txn.exec(
+                "SELECT stock FROM products WHERE id = " + std::to_string(product_id) + " FOR UPDATE"
+            );
+            if (r.empty()) {
+                throw std::runtime_error("product not found");
+            }
+            int stock = r[0][0].as<int>();
+            if (stock < quantity) {
+                throw std::runtime_error("insufficient stock (have " + std::to_string(stock) +
+                                          ", need " + std::to_string(quantity) + ")");
+            }
+            txn.exec(
+                "UPDATE products SET stock = stock - " + std::to_string(quantity) +
+                " WHERE id = " + std::to_string(product_id)
+            );
+            txn.exec("PREPARE TRANSACTION '" + txn_products + "'");
+            products_prepared = true;
+            std::cout << "  Products node: PREPARE succeeded\n";
+        } catch (const std::exception& e) {
+            std::cout << "  Products node: PREPARE failed (" << e.what() << ")\n";
+        }
+
+        std::cout << "[2PC] Phase 2: " << ((orders_prepared && products_prepared) ? "COMMIT" : "ABORT") << "\n";
+
+        if (orders_prepared && products_prepared) {
+            pqxx::nontransaction n1(orders_conn.raw_connection());
+            n1.exec("COMMIT PREPARED '" + txn_orders + "'");
+            pqxx::nontransaction n2(products_conn.raw_connection());
+            n2.exec("COMMIT PREPARED '" + txn_products + "'");
+            std::cout << "  Order placed successfully.\n";
+            return true;
+        } else {
+            if (orders_prepared) {
+                pqxx::nontransaction n1(orders_conn.raw_connection());
+                n1.exec("ROLLBACK PREPARED '" + txn_orders + "'");
+                std::cout << "  Rolled back Orders node.\n";
+            }
+            if (products_prepared) {
+                pqxx::nontransaction n2(products_conn.raw_connection());
+                n2.exec("ROLLBACK PREPARED '" + txn_products + "'");
+                std::cout << "  Rolled back Products node.\n";
+            }
+            std::cout << "  Order aborted: no partial changes were made.\n";
+            return false;
+        }
+    }
+
 private:
     std::unordered_map<NodeDomain, std::unique_ptr<NodeConnection>> connections_;
 };
@@ -142,6 +258,9 @@ int main() {
     coordinator.route_and_query(NodeDomain::Users);
     coordinator.route_and_query(NodeDomain::Products);
     coordinator.route_and_query(NodeDomain::Orders);
+
+    std::cout << "\n--- Demo: placing an order via 2PC ---\n";
+    coordinator.place_order(/*user_id=*/1, /*product_id=*/1, /*quantity=*/1);
 
     std::cout << "\n=== Coordinator finished ===\n";
 
