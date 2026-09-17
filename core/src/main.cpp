@@ -7,11 +7,9 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <pqxx/pqxx>
-
 enum class NodeState { Starting, Ready };
 enum class NodeDomain { Users, Products, Orders };
 enum class TxState { Begin, Commit, Abort };
-
 const char* state_name(NodeState state) {
     switch (state) {
         case NodeState::Starting:
