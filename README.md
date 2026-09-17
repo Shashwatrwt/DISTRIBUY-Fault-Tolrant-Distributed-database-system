@@ -238,3 +238,17 @@ No license has been selected yet.
 ## Contributing
 
 Contributions are welcome as the project grows. For now, the work is focused on learning by building the system incrementally and validating each step with small code changes.
+
+## Replication Status Update
+
+As of the latest development session, PostgreSQL logical replication has been implemented and verified across all 3 nodes in the ring topology described above:
+
+- Node 1 (Users, port 5433) → replicated to → Node 2 (port 5434)
+- Node 2 (Products, port 5434) → replicated to → Node 3 (port 5435)
+- Node 3 (Orders, port 5435) → replicated to → Node 1 (port 5433)
+
+Each leg uses a PostgreSQL publication on the source node and a subscription on the destination node. Verification: inserting a new row on a source node's table has been confirmed to appear on the corresponding replica within seconds, including full initial sync of all pre-existing rows at subscription creation time.
+
+Setup is scripted and reproducible via `scripts/setup_replication.sh`. Running this script requires `wal_level = logical` to already be set (and the node restarted) on all 3 nodes' `postgresql.conf` files first.
+
+This means the project's core fault-tolerance claim — "if Node 2 fails, Node 3 already has a copy of Products data and can take over" — is now backed by real, working replication rather than a modeled/simulated route. Automatic failover logic (the Coordinator detecting a dead node and redirecting reads/writes to its replica) is the next piece to be implemented; today's work confirms the underlying data-copying mechanism it will rely on.
