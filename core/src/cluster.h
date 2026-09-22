@@ -3,12 +3,12 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // This header holds the cluster topology definitions shared by both the
 // per-node process (main.cpp) and the Coordinator (coordinator.cpp), so
 // both always agree on which node owns which domain and which port it
-// runs on. Keeping this in one place avoids the two files drifting out
-// of sync the way main.cpp and README.md did earlier in this project.
+// runs on.
 
 enum class NodeDomain { Users, Products, Orders };
 
@@ -73,8 +73,6 @@ struct ClusterMetadata {
     }
 };
 
-// The single source of truth for cluster topology. Both main.cpp and
-// coordinator.cpp call this so the ports/domains can never disagree.
 inline ClusterMetadata build_cluster_metadata() {
     return ClusterMetadata{{
         {1, "127.0.0.1", 5433, NodeDomain::Users},
@@ -83,9 +81,21 @@ inline ClusterMetadata build_cluster_metadata() {
     }};
 }
 
-// Shared Postgres credentials for all nodes in this local dev cluster.
-// (In a real deployment these would come from environment variables or
-// a config file, not be hardcoded — noted here as a known simplification.)
+// The replication ring: each domain's data is also replicated to the node
+// that owns the domain on the right. This matches scripts/setup_replication.sh:
+//   Users (node1)    -> replicated to -> node2 (Products' node)
+//   Products (node2) -> replicated to -> node3 (Orders' node)
+//   Orders (node3)   -> replicated to -> node1 (Users' node)
+// So if a domain's PRIMARY node is down, its data can still be read from
+// the node that owns the domain this map points to.
+inline std::unordered_map<NodeDomain, NodeDomain> build_replica_map() {
+    return {
+        {NodeDomain::Users, NodeDomain::Products},
+        {NodeDomain::Products, NodeDomain::Orders},
+        {NodeDomain::Orders, NodeDomain::Users}
+    };
+}
+
 inline const char* PG_USER = "postgres";
 inline const char* PG_PASSWORD = "kvara";
 
