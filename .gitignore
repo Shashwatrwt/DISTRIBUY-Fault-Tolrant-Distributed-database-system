@@ -3,3 +3,4 @@ core/src/main.exe
 *.o
 core/src/coordinator
 api/node_modules/
+api/node_modules/
