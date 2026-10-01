@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ShardCore — Distributed E-Commerce Demo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --up: #22c55e;
+    --down: #ef4444;
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 24px; font-size: 0.9rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+  .node-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--panel-border); font-size: 0.9rem; }
+  .node-row:last-child { border-bottom: none; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .badge.up { background: rgba(34,197,94,0.15); color: var(--up); }
+  .badge.down { background: rgba(239,68,68,0.15); color: var(--down); }
+  .cluster-summary { margin-top: 12px; font-size: 0.85rem; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--muted); font-weight: 500; }
+  .source-tag { font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
+  .source-tag.primary { background: rgba(99,102,241,0.15); color: #818cf8; }
+  .source-tag.replica { background: rgba(234,179,8,0.15); color: #eab308; }
+  form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  input, select {
+    background: #0f172a;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 9px 14px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .result-msg { margin-top: 8px; font-size: 0.85rem; padding: 8px; border-radius: 6px; }
+  .result-msg.success { background: rgba(34,197,94,0.1); color: var(--up); }
+  .result-msg.error { background: rgba(239,68,68,0.1); color: var(--down); }
+  .full-width { grid-column: 1 / -1; }
+  .refresh-note { font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+const API_BASE = "http://localhost:4000";
+
+function useApi(path, intervalMs) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  const fetchData = useCallback(() => {
+    fetch(API_BASE + path)
+      .then(r => r.json())
+      .then(json => { setData(json); setError(null); })
+      .catch(err => setError(err.message));
+  }, [path]);
+
+  useEffect(() => {
+    fetchData();
+    if (intervalMs) {
+      const id = setInterval(fetchData, intervalMs);
+      return () => clearInterval(id);
+    }
+  }, [fetchData, intervalMs]);
+
+  return { data, error, refetch: fetchData };
+}
+
+function ClusterHealth() {
+  const { data, error } = useApi("/health", 3000);
+
+  if (error) {
+    return (
+      <div className="panel full-width">
+        <h2>🩺 Cluster Health</h2>
+        <div className="result-msg error">Could not reach API: {error}</div>
+      </div>
+    );
+  }
+  if (!data) return <div className="panel full-width"><h2>🩺 Cluster Health</h2><p>Loading...</p></div>;
+
+  return (
+    <div className="panel full-width">
+      <h2>🩺 Cluster Health <span style={{fontSize: "0.75rem", color: "var(--muted)", fontWeight: 400}}>(auto-refreshing every 3s)</span></h2>
+      {Object.entries(data.nodes).map(([domain, status]) => (
+        <div className="node-row" key={domain}>
+          <span style={{textTransform: "capitalize"}}>{domain} node</span>
+          <span className={"badge " + (status === "UP" ? "up" : "down")}>{status}</span>
+        </div>
+      ))}
+      <div className="cluster-summary">
+        {data.reachable} nodes reachable · quorum {data.quorum} ·{" "}
+        <strong style={{color: data.cluster_available ? "var(--up)" : "var(--down)"}}>
+          {data.cluster_available ? "AVAILABLE" : "UNAVAILABLE"}
+        </strong>
+      </div>
+    </div>
+  );
+}
+
+function DataTable({ title, icon, path, columns }) {
+  const { data, error, refetch } = useApi(path, null);
+
+  return (
+    <div className="panel">
+      <h2>{icon} {title}</h2>
+      {error && <div className="result-msg error">{error}</div>}
+      {data && (
+        <>
+          {data.source && (
+            <div style={{marginBottom: 8}}>
+              <span className={"source-tag " + data.source}>
+                served from {data.source} ({data.node})
+              </span>
+            </div>
+          )}
+          <table>
+            <thead>
+              <tr>{columns.map(c => <th key={c.key}>{c.label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {data.rows && data.rows.map(row => (
+                <tr key={row.id}>
+                  {columns.map(c => <td key={c.key}>{String(row[c.key] ?? "")}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(!data.rows || data.rows.length === 0) && <p style={{color: "var(--muted)", fontSize: "0.85rem"}}>No rows yet.</p>}
+        </>
+      )}
+      <button style={{marginTop: 10}} onClick={refetch}>Refresh</button>
+    </div>
+  );
+}
+
+function PlaceOrderForm({ onOrderPlaced }) {
+  const [userId, setUserId] = useState("1");
+  const [productId, setProductId] = useState("1");
+  const [quantity, setQuantity] = useState("1");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const submit = (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setResult(null);
+    fetch(API_BASE + "/orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: Number(userId), product_id: Number(productId), quantity: Number(quantity) }),
+    })
+      .then(async (r) => {
+        const json = await r.json();
+        setResult({ ok: r.ok, message: json.message || json.error });
+        if (r.ok && onOrderPlaced) onOrderPlaced();
+      })
+      .catch(err => setResult({ ok: false, message: err.message }))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <div className="panel">
+      <h2>🛒 Place Order (2PC)</h2>
+      <form onSubmit={submit}>
+        <label>User ID
+          <input type="number" value={userId} onChange={e => setUserId(e.target.value)} min="1" />
+        </label>
+        <label>Product ID
+          <input type="number" value={productId} onChange={e => setProductId(e.target.value)} min="1" />
+        </label>
+        <label>Quantity
+          <input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} min="1" />
+        </label>
+        <button type="submit" disabled={loading}>{loading ? "Placing..." : "Place Order"}</button>
+      </form>
+      {result && (
+        <div className={"result-msg " + (result.ok ? "success" : "error")}>
+          {result.ok ? "✅ " : "❌ "}{result.message}
+        </div>
+      )}
+      <p className="refresh-note">
+        This runs real Two-Phase Commit across the Orders and Products nodes.
+        If stock is insufficient, or either node is down, it aborts safely with no partial changes.
+      </p>
+    </div>
+  );
+}
+
+function AddUserForm({ onAdded }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [result, setResult] = useState(null);
+
+  const submit = (e) => {
+    e.preventDefault();
+    fetch(API_BASE + "/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email }),
+    })
+      .then(async r => {
+        const json = await r.json();
+        setResult({ ok: r.ok, message: r.ok ? `Created user #${json.id}` : json.error });
+        if (r.ok) { setName(""); setEmail(""); onAdded && onAdded(); }
+      })
+      .catch(err => setResult({ ok: false, message: err.message }));
+  };
+
+  return (
+    <div className="panel">
+      <h2>👤 Add User</h2>
+      <form onSubmit={submit}>
+        <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} required />
+        <input placeholder="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+        <button type="submit">Add User</button>
+      </form>
+      {result && <div className={"result-msg " + (result.ok ? "success" : "error")}>{result.message}</div>}
+    </div>
+  );
+}
+
+function AddProductForm({ onAdded }) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [stock, setStock] = useState("");
+  const [result, setResult] = useState(null);
+
+  const submit = (e) => {
+    e.preventDefault();
+    fetch(API_BASE + "/products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, price: Number(price), stock: Number(stock) }),
+    })
+      .then(async r => {
+        const json = await r.json();
+        setResult({ ok: r.ok, message: r.ok ? `Created product #${json.id}` : json.error });
+        if (r.ok) { setName(""); setPrice(""); setStock(""); onAdded && onAdded(); }
+      })
+      .catch(err => setResult({ ok: false, message: err.message }));
+  };
+
+  return (
+    <div className="panel">
+      <h2>📦 Add Product</h2>
+      <form onSubmit={submit}>
+        <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} required />
+        <input placeholder="Price" type="number" step="0.01" value={price} onChange={e => setPrice(e.target.value)} required />
+        <input placeholder="Stock" type="number" value={stock} onChange={e => setStock(e.target.value)} required />
+        <button type="submit">Add Product</button>
+      </form>
+      {result && <div className={"result-msg " + (result.ok ? "success" : "error")}>{result.message}</div>}
+    </div>
+  );
+}
+
+function App() {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const bump = () => setRefreshKey(k => k + 1);
+
+  return (
+    <div className="container">
+      <h1>ShardCore</h1>
+      <p className="subtitle">Distributed, fault-tolerant PostgreSQL e-commerce backend — live demo</p>
+
+      <div className="grid">
+        <ClusterHealth key={"health-" + refreshKey} />
+      </div>
+
+      <div className="grid">
+        <DataTable
+          key={"users-" + refreshKey}
+          title="Users"
+          icon="👤"
+          path="/users"
+          columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"email",label:"Email"}]}
+        />
+        <DataTable
+          key={"products-" + refreshKey}
+          title="Products"
+          icon="📦"
+          path="/products"
+          columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"price",label:"Price"},{key:"stock",label:"Stock"}]}
+        />
+        <DataTable
+          key={"orders-" + refreshKey}
+          title="Orders"
+          icon="🧾"
+          path="/orders"
+          columns={[{key:"id",label:"ID"},{key:"user_id",label:"User"},{key:"product_id",label:"Product"},{key:"quantity",label:"Qty"},{key:"status",label:"Status"}]}
+        />
+      </div>
+
+      <div className="grid">
+        <PlaceOrderForm onOrderPlaced={bump} />
+        <AddUserForm onAdded={bump} />
+        <AddProductForm onAdded={bump} />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
