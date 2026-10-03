@@ -4,9 +4,19 @@ A distributed, fault-tolerant e-commerce system using PostgreSQL as the storage 
 
 ## Current Status
 
-The repository currently contains only a C++ foundation prototype in `core/src/main.cpp`. It demonstrates node metadata, peer validation, quorum arithmetic, a modeled replica route, transaction-state transitions, command-line node selection, a liveness/heartbeat-timeout model not yet backed by real network heartbeats, and an in-memory placeholder store and log.
+All core MVP components are implemented and have been verified live against a real 3-node PostgreSQL cluster:
 
-PostgreSQL connections, TCP communication, logical replication, locking, two-phase commit, heartbeat-based failure detection, recovery, the application API, and the frontend have not been implemented yet. The prototype is being developed incrementally toward the MVP described below.
+- **3 independent PostgreSQL clusters** (node1/5433, node2/5434, node3/5435), each with its own data directory, each owning one business domain's table.
+- **`core/src/main.cpp`** — a per-node process using `libpqxx` to connect to its own node's PostgreSQL database (not an in-memory placeholder). Started as `./main 1`, `./main 2`, or `./main 3`.
+- **`core/src/coordinator.cpp`** — the real Coordinator. It connects to all 3 nodes simultaneously and provides:
+  - request routing by domain, with **automatic failover**: if a domain's primary node is unreachable, reads are transparently served from the node holding its replicated copy instead.
+  - **real Two-Phase Commit** (`PREPARE TRANSACTION` / `COMMIT PREPARED` / `ROLLBACK PREPARED`) for placing an order across the Orders and Products nodes — both the commit path and the abort path (e.g. insufficient stock, or a dead node) have been tested and leave no partial state.
+  - **continuous heartbeat monitoring** (`./coordinator --watch`): pings every node on an interval and detects both failure and recovery without the Coordinator being restarted.
+- **PostgreSQL logical replication** is live in the ring topology described below (Users → node2, Products → node3, Orders → node1), set up via `scripts/setup_replication.sh`. Verified: an insert on a source table appears on its replica within seconds, and a node's data survives that node being killed.
+- **`api/server.js`** — a Node.js/Express REST API (`/health`, `/users`, `/products`, `/orders`) implementing the same routing, failover, and 2PC logic as the C++ Coordinator, with CORS enabled for browser access. All endpoints tested live, including placing a real order over HTTP.
+- **`frontend/index.html`** — a React dashboard (cluster health, live tables, a 2PC-backed order form) that calls the REST API directly, tested in-browser including a live kill-a-node failover demo.
+
+What's not yet built: WAL-based crash recovery logic beyond what PostgreSQL itself provides, and any of the stretch goals (leader election, dynamic sharding, multi-machine deployment) — these remain out of scope unless time permits, per the MVP/Stretch split below.
 
 ## The core problem you're solving
 
@@ -59,11 +69,11 @@ The prototype models these nodes with localhost endpoints on ports 5433, 5434, a
 
 ### Partitioning
 
-Instead of one giant table spanning one machine, each table lives on one node. This spreads storage and request load, and a problem in one domain does not bring down the entire system.
+Instead of one giant table spanning one machine, each table lives on one node. This spreads storage and request load, and a problemin one domain does not bring down the entire system.
 
 ### Replication
 
-Partitioning alone is risky. If one node fails, data becomes unreachable. PostgreSQL logical replication copies each node's data to another node in a ring:
+Partitioning alone is risky. If one node fails, data becomes unreachable. PostgreSQL logical replication copies each node's data toanother node in a ring:
 
 ```text
 Node 1 (Users) → replicated to → Node 2
@@ -85,7 +95,7 @@ The coordinator:
 - sends heartbeat checks
 - triggers failover when a node dies
 
-This hides the complexity from the application layer in the planned architecture. The current prototype only prints a modeled route; it does not accept requests or connect to nodes.
+This hides the complexity from the application layer, and is now implemented in `core/src/coordinator.cpp` (routing, failover, 2PC, heartbeat monitoring) and mirrored in `api/server.js` for HTTP access.
 
 ## Concurrency control
 
@@ -132,7 +142,7 @@ This prevents half-finished updates.
 - failover: traffic is redirected to the replica of a failed node
 - recovery: PostgreSQL replays its WAL when a node restarts; the Coordinator checks replication status, syncs missed updates, and only then returns the node to service
 
-This complete lifecycle is a major planned demo point: kill a node, watch failover, restart it, watch recovery. The current prototype only reports quorum availability, a configured replica route, and whether its in-memory log is non-empty.
+This complete lifecycle has been demonstrated live: killing node2's PostgreSQL cluster mid-session causes the Coordinator's heartbeat loop to detect it within seconds, reads automatically fail over to node3 (which holds the replicated Products data), writes correctly refuse to go through the dead primary, and restarting node2 is automatically detected as a recovery.
 
 ## OS concepts reflected in the project
 
@@ -147,11 +157,11 @@ This complete lifecycle is a major planned demo point: kill a node, watch failov
 
 ## Tech stack
 
-- C++ (Coordinator)
-- TCP sockets
-- PostgreSQL (per-node storage)
-- Node.js/Express (REST API)
-- React (frontend)
+- C++ (Coordinator, per-node process), using `libpqxx` for PostgreSQL connections
+- TCP sockets (both the Postgres wire protocol used by `libpqxx`, and PostgreSQL's own logical replication traffic between nodes)
+- PostgreSQL (per-node storage, 2PC, row-level locking, logical replication)
+- Node.js/Express + the `pg` driver (REST API)
+- React, loaded via CDN as a single static HTML file, no build tooling (frontend)
 
 ## Why this project is valuable
 
@@ -199,37 +209,56 @@ ShardCore/
 ├── README.md
 ├── core/
 │   └── src/
-│       └── main.cpp
-├── api/                  # planned Node.js/Express service
-├── frontend/             # planned React app
-├── docs/                 # planned architecture and design notes
-├── scripts/              # planned setup/test scripts
+│       ├── main.cpp          # per-node process (libpqxx connection to its own DB)
+│       ├── coordinator.cpp   # Coordinator: routing, failover, 2PC, heartbeat monitoring
+│       └── cluster.h         # shared topology/replica-map definitions
+├── api/
+│   ├── server.js             # Express REST API (health, users, products, orders)
+│   └── package.json
+├── frontend/
+│   └── index.html            # React dashboard (CDN-based, no build step)
+├── scripts/
+│   └── setup_replication.sh  # reproducible logical replication ring setup
+├── docs/                     # planned architecture and design notes
 └── .gitignore
 ```
 
 ## Current local build and run
 
-The current C++ foundation prototype can be built and run through WSL2/Ubuntu with `g++`. Pass a node ID of 1, 2, or 3 to start the corresponding node:
+Everything below runs through WSL2/Ubuntu, against 3 local PostgreSQL clusters on ports 5433/5434/5435 (`wal_level = logical` and `max_prepared_transactions > 0` must be set on all 3, per `scripts/setup_replication.sh`'s prerequisites).
 
+**Per-node process** (mainly for demonstrating the per-node connection in isolation):
 ```bash
-g++ -Wall -Wextra core/src/main.cpp -o core/src/main
+g++ -Wall -Wextra core/src/main.cpp -o core/src/main -lpqxx -lpq
 ./core/src/main 1   # Users node
 ./core/src/main 2   # Products & Inventory node
 ./core/src/main 3   # Orders & Payments node
 ```
 
-The current prototype demonstrates local node metadata, peer validation, quorum logic, a modeled route, transaction-state transitions, and an in-memory placeholder store and log. PostgreSQL connections, TCP communication, logical replication, locking, two-phase commit, failure detection, recovery, and the real Coordinator service are planned implementation work, not yet completed.
+**Coordinator** (the real distributed-systems core — connects to all 3 nodes, routes, fails over, runs 2PC):
+```bash
+g++ -Wall -Wextra core/src/coordinator.cpp -o core/src/coordinator -lpqxx -lpq
+./core/src/coordinator           # one-shot: health check, routed queries, a 2PC order demo
+./core/src/coordinator --watch   # continuous heartbeat monitoring (Ctrl+C to stop)
+```
+
+**REST API + frontend** (the demoable, browser-facing layer):
+```bash
+cd api && npm install && node server.js   # http://localhost:4000
+```
+Then open `frontend/index.html` directly in a browser (no build step required).
 
 ## Development roadmap
 
-1. define node and cluster topology
-2. implement sharding model
-3. connect the Coordinator to PostgreSQL-backed nodes over TCP
-4. add ring replication and replication-status monitoring
-5. add distributed transactions with PostgreSQL 2PC
-6. add concurrency control, failure detection, failover, and recovery
-7. build the REST API and connect it to the Coordinator
-8. build the frontend and e-commerce flows
+1. ✅ define node and cluster topology
+2. ✅ implement sharding model (domain-based partitioning: each table lives on exactly one primary node)
+3. ✅ connect the Coordinator to PostgreSQL-backed nodes (via `libpqxx`, over TCP)
+4. ✅ add ring replication and replication-status monitoring
+5. ✅ add distributed transactions with PostgreSQL 2PC
+6. ✅ add concurrency control (via Postgres row-level locking, `FOR UPDATE`), failure detection, failover, and recovery
+7. ✅ build the REST API and connect it to the Coordinator's logic
+8. ✅ build the frontend and core e-commerce flows (browse, place order)
+9. remaining: admin-dashboard polish, written partitioning documentation, and any stretch goals as time permits
 
 ## License
 
@@ -239,16 +268,3 @@ No license has been selected yet.
 
 Contributions are welcome as the project grows. For now, the work is focused on learning by building the system incrementally and validating each step with small code changes.
 
-## Replication Status Update
-
-As of the latest development session, PostgreSQL logical replication has been implemented and verified across all 3 nodes in the ring topology described above:
-
-- Node 1 (Users, port 5433) → replicated to → Node 2 (port 5434)
-- Node 2 (Products, port 5434) → replicated to → Node 3 (port 5435)
-- Node 3 (Orders, port 5435) → replicated to → Node 1 (port 5433)
-
-Each leg uses a PostgreSQL publication on the source node and a subscription on the destination node. Verification: inserting a new row on a source node's table has been confirmed to appear on the corresponding replica within seconds, including full initial sync of all pre-existing rows at subscription creation time.
-
-Setup is scripted and reproducible via `scripts/setup_replication.sh`. Running this script requires `wal_level = logical` to already be set (and the node restarted) on all 3 nodes' `postgresql.conf` files first.
-
-This means the project's core fault-tolerance claim — "if Node 2 fails, Node 3 already has a copy of Products data and can take over" — is now backed by real, working replication rather than a modeled/simulated route. Automatic failover logic (the Coordinator detecting a dead node and redirecting reads/writes to its replica) is the next piece to be implemented; today's work confirms the underlying data-copying mechanism it will rely on.
