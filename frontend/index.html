@@ -20,22 +20,17 @@
     --accent-hover: #4f46e5;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-  }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
   .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px 80px; }
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
-  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 24px; font-size: 0.9rem; }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 20px; font-size: 0.9rem; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid var(--panel-border); }
+  .tab { padding: 10px 18px; cursor: pointer; color: var(--muted); font-size: 0.9rem; font-weight: 600; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--panel-border);
-    border-radius: 10px;
-    padding: 16px;
-  }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; }
   .panel h2 { margin: 0 0 12px; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
   .node-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--panel-border); font-size: 0.9rem; }
   .node-row:last-child { border-bottom: none; }
@@ -50,24 +45,9 @@
   .source-tag.primary { background: rgba(99,102,241,0.15); color: #818cf8; }
   .source-tag.replica { background: rgba(234,179,8,0.15); color: #eab308; }
   form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-  input, select {
-    background: #0f172a;
-    border: 1px solid var(--panel-border);
-    color: var(--text);
-    padding: 8px 10px;
-    border-radius: 6px;
-    font-size: 0.85rem;
-  }
-  button {
-    background: var(--accent);
-    color: white;
-    border: none;
-    padding: 9px 14px;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    cursor: pointer;
-    font-weight: 600;
-  }
+  label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  input, select { background: #0f172a; border: 1px solid var(--panel-border); color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 0.85rem; }
+  button { background: var(--accent); color: white; border: none; padding: 9px 14px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; font-weight: 600; }
   button:hover { background: var(--accent-hover); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   .result-msg { margin-top: 8px; font-size: 0.85rem; padding: 8px; border-radius: 6px; }
@@ -75,6 +55,22 @@
   .result-msg.error { background: rgba(239,68,68,0.1); color: var(--down); }
   .full-width { grid-column: 1 / -1; }
   .refresh-note { font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
+
+  /* --- Shop-specific styles --- */
+  .shop-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+  .user-switcher { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); }
+  .user-switcher select { padding: 6px 8px; }
+  .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .product-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; }
+  .product-card .emoji { font-size: 2rem; margin-bottom: 8px; }
+  .product-card h3 { margin: 0 0 4px; font-size: 1rem; }
+  .product-card .price { font-size: 1.2rem; font-weight: 700; color: #a5b4fc; margin: 4px 0; }
+  .product-card .stock { font-size: 0.8rem; color: var(--muted); margin-bottom: 10px; }
+  .product-card .stock.low { color: #f59e0b; }
+  .product-card .stock.out { color: var(--down); }
+  .qty-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .qty-row input { width: 60px; text-align: center; }
+  .cart-toast { position: fixed; bottom: 20px; right: 20px; background: var(--up); color: #063016; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
 </style>
 </head>
 <body>
@@ -82,8 +78,10 @@
 
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
-
 const API_BASE = "http://localhost:4000";
+
+const PRODUCT_EMOJIS = ["🖱️", "⌨️", "🎧", "🔌", "💻", "📱", "⌚", "📷", "🔋", "🖥️"];
+function emojiFor(id) { return PRODUCT_EMOJIS[id % PRODUCT_EMOJIS.length]; }
 
 function useApi(path, intervalMs) {
   const [data, setData] = useState(null);
@@ -107,17 +105,113 @@ function useApi(path, intervalMs) {
   return { data, error, refetch: fetchData };
 }
 
+// ============== SHOP (customer-facing) ==============
+
+function ProductCard({ product, currentUserId, onPurchased }) {
+  const [qty, setQty] = useState(1);
+  const [status, setStatus] = useState(null); // { ok, message }
+  const [loading, setLoading] = useState(false);
+
+  const outOfStock = product.stock <= 0;
+
+  const buyNow = () => {
+    setLoading(true);
+    setStatus(null);
+    fetch(API_BASE + "/orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: currentUserId, product_id: product.id, quantity: Number(qty) }),
+    })
+      .then(async (r) => {
+        const json = await r.json();
+        setStatus({ ok: r.ok, message: r.ok ? "Order placed!" : (json.error || json.message) });
+        if (r.ok) onPurchased && onPurchased();
+      })
+      .catch(err => setStatus({ ok: false, message: err.message }))
+      .finally(() => setLoading(false));
+  };
+
+  const stockClass = outOfStock ? "out" : (product.stock <= 3 ? "low" : "");
+  const stockLabel = outOfStock ? "Out of stock" : `${product.stock} left in stock`;
+
+  return (
+    <div className="product-card">
+      <div className="emoji">{emojiFor(product.id)}</div>
+      <h3>{product.name}</h3>
+      <div className="price">₹{Number(product.price).toFixed(2)}</div>
+      <div className={"stock " + stockClass}>{stockLabel}</div>
+      <div className="qty-row">
+        <label style={{flexDirection:"row", alignItems:"center", gap:6}}>Qty
+          <input type="number" min="1" max={Math.max(product.stock,1)} value={qty}
+                 onChange={e => setQty(e.target.value)} disabled={outOfStock} />
+        </label>
+      </div>
+      <button onClick={buyNow} disabled={outOfStock || loading}>
+        {outOfStock ? "Out of Stock" : (loading ? "Placing order..." : "Buy Now")}
+      </button>
+      {status && (
+        <div className={"result-msg " + (status.ok ? "success" : "error")}>
+          {status.ok ? "✅ " : "❌ "}{status.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShopView() {
+  const { data: usersData } = useApi("/users", null);
+  const { data: productsData, refetch: refetchProducts } = useApi("/products", 5000);
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (usersData && usersData.rows && usersData.rows.length > 0 && currentUserId === null) {
+      setCurrentUserId(usersData.rows[0].id);
+    }
+  }, [usersData, currentUserId]);
+
+  const handlePurchased = () => {
+    refetchProducts();
+    setToast("Order placed — thank you for shopping with ShardCore!");
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  return (
+    <div>
+      <div className="shop-header">
+        <h2 style={{margin:0, fontSize:"1.1rem"}}>🛍️ Shop Products</h2>
+        <div className="user-switcher">
+          Shopping as:
+          <select value={currentUserId ?? ""} onChange={e => setCurrentUserId(Number(e.target.value))}>
+            {usersData && usersData.rows && usersData.rows.map(u => (
+              <option key={u.id} value={u.id}>{u.name} (#{u.id})</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {!productsData && <p style={{color: "var(--muted)"}}>Loading products...</p>}
+      {productsData && productsData.rows && productsData.rows.length === 0 && (
+        <p style={{color: "var(--muted)"}}>No products available yet.</p>
+      )}
+      {productsData && productsData.rows && productsData.rows.length > 0 && currentUserId !== null && (
+        <div className="product-grid">
+          {productsData.rows.map(p => (
+            <ProductCard key={p.id} product={p} currentUserId={currentUserId} onPurchased={handlePurchased} />
+          ))}
+        </div>
+      )}
+
+      {toast && <div className="cart-toast">{toast}</div>}
+    </div>
+  );
+}
+
+// ============== ADMIN / SYSTEM (existing dashboard) ==============
+
 function ClusterHealth() {
   const { data, error } = useApi("/health", 3000);
-
-  if (error) {
-    return (
-      <div className="panel full-width">
-        <h2>🩺 Cluster Health</h2>
-        <div className="result-msg error">Could not reach API: {error}</div>
-      </div>
-    );
-  }
+  if (error) return <div className="panel full-width"><h2>🩺 Cluster Health</h2><div className="result-msg error">Could not reach API: {error}</div></div>;
   if (!data) return <div className="panel full-width"><h2>🩺 Cluster Health</h2><p>Loading...</p></div>;
 
   return (
@@ -141,29 +235,18 @@ function ClusterHealth() {
 
 function DataTable({ title, icon, path, columns }) {
   const { data, error, refetch } = useApi(path, null);
-
   return (
     <div className="panel">
       <h2>{icon} {title}</h2>
       {error && <div className="result-msg error">{error}</div>}
       {data && (
         <>
-          {data.source && (
-            <div style={{marginBottom: 8}}>
-              <span className={"source-tag " + data.source}>
-                served from {data.source} ({data.node})
-              </span>
-            </div>
-          )}
+          {data.source && <div style={{marginBottom: 8}}><span className={"source-tag " + data.source}>served from {data.source} ({data.node})</span></div>}
           <table>
-            <thead>
-              <tr>{columns.map(c => <th key={c.key}>{c.label}</th>)}</tr>
-            </thead>
+            <thead><tr>{columns.map(c => <th key={c.key}>{c.label}</th>)}</tr></thead>
             <tbody>
               {data.rows && data.rows.map(row => (
-                <tr key={row.id}>
-                  {columns.map(c => <td key={c.key}>{String(row[c.key] ?? "")}</td>)}
-                </tr>
+                <tr key={row.id}>{columns.map(c => <td key={c.key}>{String(row[c.key] ?? "")}</td>)}</tr>
               ))}
             </tbody>
           </table>
@@ -187,8 +270,7 @@ function PlaceOrderForm({ onOrderPlaced }) {
     setLoading(true);
     setResult(null);
     fetch(API_BASE + "/orders", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: Number(userId), product_id: Number(productId), quantity: Number(quantity) }),
     })
       .then(async (r) => {
@@ -202,28 +284,15 @@ function PlaceOrderForm({ onOrderPlaced }) {
 
   return (
     <div className="panel">
-      <h2>🛒 Place Order (2PC)</h2>
+      <h2>🧪 Place Order (raw 2PC test)</h2>
       <form onSubmit={submit}>
-        <label>User ID
-          <input type="number" value={userId} onChange={e => setUserId(e.target.value)} min="1" />
-        </label>
-        <label>Product ID
-          <input type="number" value={productId} onChange={e => setProductId(e.target.value)} min="1" />
-        </label>
-        <label>Quantity
-          <input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} min="1" />
-        </label>
+        <label>User ID<input type="number" value={userId} onChange={e => setUserId(e.target.value)} min="1" /></label>
+        <label>Product ID<input type="number" value={productId} onChange={e => setProductId(e.target.value)} min="1" /></label>
+        <label>Quantity<input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} min="1" /></label>
         <button type="submit" disabled={loading}>{loading ? "Placing..." : "Place Order"}</button>
       </form>
-      {result && (
-        <div className={"result-msg " + (result.ok ? "success" : "error")}>
-          {result.ok ? "✅ " : "❌ "}{result.message}
-        </div>
-      )}
-      <p className="refresh-note">
-        This runs real Two-Phase Commit across the Orders and Products nodes.
-        If stock is insufficient, or either node is down, it aborts safely with no partial changes.
-      </p>
+      {result && <div className={"result-msg " + (result.ok ? "success" : "error")}>{result.ok ? "✅ " : "❌ "}{result.message}</div>}
+      <p className="refresh-note">For testing the Coordinator directly with arbitrary IDs. Customers use the Shop tab instead.</p>
     </div>
   );
 }
@@ -232,14 +301,9 @@ function AddUserForm({ onAdded }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [result, setResult] = useState(null);
-
   const submit = (e) => {
     e.preventDefault();
-    fetch(API_BASE + "/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
-    })
+    fetch(API_BASE + "/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, email }) })
       .then(async r => {
         const json = await r.json();
         setResult({ ok: r.ok, message: r.ok ? `Created user #${json.id}` : json.error });
@@ -247,7 +311,6 @@ function AddUserForm({ onAdded }) {
       })
       .catch(err => setResult({ ok: false, message: err.message }));
   };
-
   return (
     <div className="panel">
       <h2>👤 Add User</h2>
@@ -266,14 +329,9 @@ function AddProductForm({ onAdded }) {
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("");
   const [result, setResult] = useState(null);
-
   const submit = (e) => {
     e.preventDefault();
-    fetch(API_BASE + "/products", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, price: Number(price), stock: Number(stock) }),
-    })
+    fetch(API_BASE + "/products", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, price: Number(price), stock: Number(stock) }) })
       .then(async r => {
         const json = await r.json();
         setResult({ ok: r.ok, message: r.ok ? `Created product #${json.id}` : json.error });
@@ -281,7 +339,6 @@ function AddProductForm({ onAdded }) {
       })
       .catch(err => setResult({ ok: false, message: err.message }));
   };
-
   return (
     <div className="panel">
       <h2>📦 Add Product</h2>
@@ -296,48 +353,92 @@ function AddProductForm({ onAdded }) {
   );
 }
 
-function App() {
-  const [refreshKey, setRefreshKey] = useState(0);
-  const bump = () => setRefreshKey(k => k + 1);
-
+function AdminView({ refreshKey, bump }) {
   return (
-    <div className="container">
-      <h1>ShardCore</h1>
-      <p className="subtitle">Distributed, fault-tolerant PostgreSQL e-commerce backend — live demo</p>
-
+    <div>
+      <div className="grid"><ClusterHealth key={"health-" + refreshKey} /></div>
       <div className="grid">
-        <ClusterHealth key={"health-" + refreshKey} />
+        <DataTable key={"users-" + refreshKey} title="Users" icon="👤" path="/users" columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"email",label:"Email"}]} />
+        <DataTable key={"products-" + refreshKey} title="Products" icon="📦" path="/products" columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"price",label:"Price"},{key:"stock",label:"Stock"}]} />
+        <DataTable key={"orders-" + refreshKey} title="Orders" icon="🧾" path="/orders" columns={[{key:"id",label:"ID"},{key:"user_id",label:"User"},{key:"product_id",label:"Product"},{key:"quantity",label:"Qty"},{key:"status",label:"Status"}]} />
       </div>
-
-      <div className="grid">
-        <DataTable
-          key={"users-" + refreshKey}
-          title="Users"
-          icon="👤"
-          path="/users"
-          columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"email",label:"Email"}]}
-        />
-        <DataTable
-          key={"products-" + refreshKey}
-          title="Products"
-          icon="📦"
-          path="/products"
-          columns={[{key:"id",label:"ID"},{key:"name",label:"Name"},{key:"price",label:"Price"},{key:"stock",label:"Stock"}]}
-        />
-        <DataTable
-          key={"orders-" + refreshKey}
-          title="Orders"
-          icon="🧾"
-          path="/orders"
-          columns={[{key:"id",label:"ID"},{key:"user_id",label:"User"},{key:"product_id",label:"Product"},{key:"quantity",label:"Qty"},{key:"status",label:"Status"}]}
-        />
-      </div>
-
       <div className="grid">
         <PlaceOrderForm onOrderPlaced={bump} />
         <AddUserForm onAdded={bump} />
         <AddProductForm onAdded={bump} />
       </div>
+    </div>
+  );
+}
+
+// ============== ADMIN LOGIN GATE ==============
+// NOTE: this is a UI-level convenience gate only, not real security. The
+// hardcoded credentials and client-side check below can be bypassed by
+// anyone who reads this page's source — they exist only so a casual
+// visitor to the Shop doesn't stumble into the admin view by accident
+// during a demo. Genuine protection would require the API itself to
+// reject admin-only requests (e.g. POST /users, POST /products) without
+// a valid server-issued session/token, which is not implemented in this
+// project — see README's "Known limitations" note.
+const ADMIN_USERNAME = "admin";
+const ADMIN_PASSWORD = "admin123";
+
+function AdminLogin({ onLoggedIn }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+      setError(null);
+      onLoggedIn();
+    } else {
+      setError("Incorrect username or password.");
+    }
+  };
+
+  return (
+    <div className="panel" style={{maxWidth: 320, margin: "40px auto"}}>
+      <h2>🔒 Admin Login</h2>
+      <form onSubmit={submit}>
+        <input placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} autoFocus />
+        <input placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} />
+        <button type="submit">Log In</button>
+      </form>
+      {error && <div className="result-msg error">{error}</div>}
+      <p className="refresh-note">Demo credentials: admin / admin123</p>
+    </div>
+  );
+}
+
+// ============== APP SHELL ==============
+
+function App() {
+  const [tab, setTab] = useState("shop");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [isAdminAuthed, setIsAdminAuthed] = useState(false);
+  const bump = () => setRefreshKey(k => k + 1);
+
+  const goToAdminTab = () => setTab("admin");
+  const logoutAdmin = () => { setIsAdminAuthed(false); setTab("shop"); };
+
+  return (
+    <div className="container">
+      <h1>ShardCore</h1>
+      <p className="subtitle">Distributed, fault-tolerant PostgreSQL e-commerce backend</p>
+
+      <div className="tabs">
+        <div className={"tab " + (tab === "shop" ? "active" : "")} onClick={() => setTab("shop")}>🛍️ Shop</div>
+        <div className={"tab " + (tab === "admin" ? "active" : "")} onClick={goToAdminTab}>⚙️ Admin / System</div>
+        {isAdminAuthed && tab === "admin" && (
+          <div className="tab" style={{marginLeft: "auto", color: "var(--down)"}} onClick={logoutAdmin}>Log out</div>
+        )}
+      </div>
+
+      {tab === "shop" && <ShopView />}
+      {tab === "admin" && !isAdminAuthed && <AdminLogin onLoggedIn={() => setIsAdminAuthed(true)} />}
+      {tab === "admin" && isAdminAuthed && <AdminView refreshKey={refreshKey} bump={bump} />}
     </div>
   );
 }

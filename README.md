@@ -268,3 +268,7 @@ No license has been selected yet.
 
 Contributions are welcome as the project grows. For now, the work is focused on learning by building the system incrementally and validating each step with small code changes.
 
+
+## Known limitations
+
+- **The admin login is a UI convenience, not real security.** The frontend's Admin/System tab is gated by a hardcoded username/password checked entirely in client-side JavaScript. This stops a casual visitor from stumbling into the admin view during a demo, but it is trivially bypassable by anyone who reads the page's source — it is not a substitute for real authentication. The REST API's write endpoints (`POST /users`, `POST /products`) have no server-side authorization check at all: any client that knows the API's URL can call them directly, regardless of what the frontend shows. A production version of this system would need server-issued sessions or tokens, validated on the API side, before any endpoint beyond basic read access is granted. This was left out of scope for this project, which focuses on the distributed-systems layer (partitioning, replication, 2PC, failover) rather than application-level security.
