@@ -1,17 +1,7 @@
-// server.js
-//
-// REST API layer for the ShardCore distributed e-commerce backend.
-//
-// This implements the same Coordinator responsibilities as core/src/coordinator.cpp
-// (routing by domain, automatic failover to a replica when a primary node is
-// down, and 2PC for cross-node writes) but as a persistent Node.js/Express
-// process, since a web frontend needs a long-running server to talk to over
-// HTTP rather than a one-shot C++ binary. The routing/failover/2PC logic
-// mirrors the C++ Coordinator's design intentionally, so both pieces of the
-// project agree on the same architecture.
-
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 
 const app = express();
@@ -20,16 +10,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
 
-// --- Cluster topology (mirrors core/src/cluster.h) ---
 const NODES = {
   users:    { host: '127.0.0.1', port: 5433, table: 'users' },
   products: { host: '127.0.0.1', port: 5434, table: 'products' },
   orders:   { host: '127.0.0.1', port: 5435, table: 'orders' },
 };
 
-// Ring replication map (mirrors build_replica_map() in cluster.h):
-// if a domain's primary node is down, its data can still be read from
-// the node that owns the domain this map points to.
 const REPLICA_OF = {
   users: 'products',
   products: 'orders',
@@ -39,58 +25,119 @@ const REPLICA_OF = {
 const PG_USER = 'postgres';
 const PG_PASSWORD = 'kvara';
 
-// One connection pool per node, so each node's connection state
-// (up/down) is tracked independently, same as the C++ Coordinator's
-// per-node NodeConnection objects.
 const pools = {};
 for (const [domain, cfg] of Object.entries(NODES)) {
   pools[domain] = new Pool({
-    host: cfg.host,
-    port: cfg.port,
-    user: PG_USER,
-    password: PG_PASSWORD,
-    database: 'postgres',
-    max: 5,
-    connectionTimeoutMillis: 2000,
+    host: cfg.host, port: cfg.port, user: PG_USER, password: PG_PASSWORD,
+    database: 'postgres', max: 5, connectionTimeoutMillis: 2000,
   });
-  // Prevent unhandled 'error' events (e.g. when a node is down) from
-  // crashing the whole API process — a dead node should degrade that
-  // one route, not take down the server.
   pools[domain].on('error', () => {});
 }
 
-// A real liveness check: actually queries the node rather than trusting
-// a cached connection state, same principle as NodeConnection::ping()
-// in the C++ Coordinator.
 async function isAlive(domain) {
-  try {
-    await pools[domain].query('SELECT 1');
-    return true;
-  } catch {
-    return false;
-  }
+  try { await pools[domain].query('SELECT 1'); return true; }
+  catch { return false; }
 }
 
-// Routes a read to the domain's primary node; falls back to the replica
-// node if the primary is unreachable. Mirrors route_and_query() in
-// coordinator.cpp.
 async function routedQuery(domain) {
   const table = NODES[domain].table;
   if (await isAlive(domain)) {
     const result = await pools[domain].query(`SELECT * FROM ${table}`);
     return { source: 'primary', node: domain, rows: result.rows };
   }
-
   const replicaDomain = REPLICA_OF[domain];
   if (replicaDomain && (await isAlive(replicaDomain))) {
     const result = await pools[replicaDomain].query(`SELECT * FROM ${table}`);
     return { source: 'replica', node: replicaDomain, rows: result.rows };
   }
-
   throw new Error(`${domain} is unreachable and no live replica was found`);
 }
 
-// --- Health endpoint ---
+// One-time migrations (safe to run repeatedly — IF NOT EXISTS).
+(async () => {
+  try {
+    await pools.users.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;');
+    await pools.orders.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;");
+    await pools.orders.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'COD';");
+  } catch (e) {
+    console.error('Migration error:', e.message);
+  }
+})();
+
+// --- Auth ---
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD_HASH = bcrypt.hashSync('admin123', 10);
+const sessions = new Map();
+
+function issueToken(session) {
+  const token = crypto.randomBytes(24).toString('hex');
+  sessions.set(token, session);
+  return token;
+}
+function getToken(req) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+  return scheme === 'Bearer' ? token : null;
+}
+function requireAuth(req, res, next) {
+  const token = getToken(req);
+  const session = token && sessions.get(token);
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  req.session = session;
+  next();
+}
+function requireAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+    next();
+  });
+}
+
+app.post('/auth/signup', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ error: 'name, email and password are required' });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const result = await pools.users.query(
+      'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email',
+      [name, email, hash]
+    );
+    const user = result.rows[0];
+    const token = issueToken({ role: 'consumer', userId: user.id });
+    res.status(201).json({ token, role: 'consumer', user });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
+  try {
+    const result = await pools.users.query('SELECT id, name, email, password FROM users WHERE email = $1', [email]);
+    const user = result.rows[0];
+    if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const token = issueToken({ role: 'consumer', userId: user.id });
+    res.json({ token, role: 'consumer', user: { id: user.id, name: user.name, email: user.email } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/auth/admin-login', async (req, res) => {
+  const { username, password } = req.body;
+  if (username !== ADMIN_USERNAME || !bcrypt.compareSync(password || '', ADMIN_PASSWORD_HASH)) {
+    return res.status(401).json({ error: 'Invalid admin credentials' });
+  }
+  const token = issueToken({ role: 'admin', userId: null });
+  res.json({ token, role: 'admin' });
+});
+
+app.get('/auth/me', requireAuth, (req, res) => res.json({ role: req.session.role, userId: req.session.userId }));
+app.post('/auth/logout', requireAuth, (req, res) => { sessions.delete(getToken(req)); res.json({ ok: true }); });
+
+// --- Health ---
 app.get('/health', async (req, res) => {
   const status = {};
   let aliveCount = 0;
@@ -101,157 +148,129 @@ app.get('/health', async (req, res) => {
   }
   const total = Object.keys(NODES).length;
   const quorum = Math.floor(total / 2) + 1;
-  res.json({
-    nodes: status,
-    reachable: `${aliveCount}/${total}`,
-    quorum,
-    cluster_available: aliveCount >= quorum,
-  });
+  res.json({ nodes: status, reachable: `${aliveCount}/${total}`, quorum, cluster_available: aliveCount >= quorum });
 });
 
 // --- Users ---
 app.get('/users', async (req, res) => {
-  try {
-    const result = await routedQuery('users');
-    res.json(result);
-  } catch (e) {
-    res.status(503).json({ error: e.message });
-  }
+  try { res.json(await routedQuery('users')); }
+  catch (e) { res.status(503).json({ error: e.message }); }
 });
 
-app.post('/users', async (req, res) => {
+app.post('/users', requireAdmin, async (req, res) => {
   const { name, email } = req.body;
-  if (!name || !email) {
-    return res.status(400).json({ error: 'name and email are required' });
-  }
+  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
   try {
-    const result = await pools.users.query(
-      'INSERT INTO users (name, email) VALUES ($1, $2) RETURNING *',
-      [name, email]
-    );
+    const result = await pools.users.query('INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id, name, email', [name, email]);
     res.status(201).json(result.rows[0]);
   } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists' });
     res.status(500).json({ error: e.message });
   }
 });
 
-// --- Products ---
+// --- Products (full CRUD for admin; read is public) ---
 app.get('/products', async (req, res) => {
-  try {
-    const result = await routedQuery('products');
-    res.json(result);
-  } catch (e) {
-    res.status(503).json({ error: e.message });
-  }
+  try { res.json(await routedQuery('products')); }
+  catch (e) { res.status(503).json({ error: e.message }); }
 });
 
-app.post('/products', async (req, res) => {
+app.post('/products', requireAdmin, async (req, res) => {
   const { name, price, stock } = req.body;
-  if (!name || price === undefined) {
-    return res.status(400).json({ error: 'name and price are required' });
+  if (!name || price === undefined) return res.status(400).json({ error: 'name and price are required' });
+  try {
+    const result = await pools.products.query('INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *', [name, price, stock ?? 0]);
+    res.status(201).json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/products/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name, price, stock } = req.body;
+  if (!name || price === undefined || stock === undefined) {
+    return res.status(400).json({ error: 'name, price and stock are all required for an update' });
   }
   try {
     const result = await pools.products.query(
-      'INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *',
-      [name, price, stock ?? 0]
+      'UPDATE products SET name = $1, price = $2, stock = $3 WHERE id = $4 RETURNING *',
+      [name, price, stock, id]
     );
-    res.status(201).json(result.rows[0]);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- Orders (read side uses routedQuery like the others) ---
-app.get('/orders', async (req, res) => {
+app.delete('/products/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
   try {
-    const result = await routedQuery('orders');
-    res.json(result);
-  } catch (e) {
-    res.status(503).json({ error: e.message });
-  }
+    const result = await pools.products.query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+    // Note: orders.product_id is intentionally not a foreign key (see
+    // docs/partitioning.md — cross-node FKs aren't enforceable by Postgres
+    // here), so existing orders referencing a deleted product are left as-is.
+    res.json({ ok: true, deletedId: result.rows[0].id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- Place order: real 2PC across the Orders and Products nodes ---
-// Mirrors Coordinator::place_order() in coordinator.cpp exactly: both
-// nodes PREPARE, and only if BOTH succeed do we COMMIT PREPARED on both;
-// otherwise we ROLLBACK PREPARED on whichever one did succeed, so no
-// half-finished order is ever left behind.
-app.post('/orders', async (req, res) => {
-  const { user_id, product_id, quantity } = req.body;
-  if (!user_id || !product_id || !quantity) {
-    return res.status(400).json({ error: 'user_id, product_id and quantity are required' });
-  }
+// --- Orders ---
+app.get('/orders', async (req, res) => {
+  try { res.json(await routedQuery('orders')); }
+  catch (e) { res.status(503).json({ error: e.message }); }
+});
 
+app.post('/orders', requireAuth, async (req, res) => {
+  const { product_id, quantity, delivery_address } = req.body;
+  const user_id = req.session.role === 'admin' && req.body.user_id ? req.body.user_id : req.session.userId;
+
+  if (!user_id || !product_id || !quantity) {
+    return res.status(400).json({ error: 'product_id and quantity are required' });
+  }
+  // Admin's raw 2PC test form doesn't need a real delivery address.
+  if (req.session.role !== 'admin' && !delivery_address) {
+    return res.status(400).json({ error: 'delivery_address is required' });
+  }
   if (!(await isAlive('orders')) || !(await isAlive('products'))) {
-    return res.status(503).json({
-      error: '2PC requires both the Orders and Products primary nodes to be reachable ' +
-             '(a replica cannot be written to)',
-    });
+    return res.status(503).json({ error: '2PC requires both the Orders and Products primary nodes to be reachable' });
   }
 
   const ordersClient = await pools.orders.connect();
   const productsClient = await pools.products.connect();
-
   const txnId = `order_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
   const txnOrders = `${txnId}_orders`;
   const txnProducts = `${txnId}_products`;
-
   let ordersPrepared = false;
   let productsPrepared = false;
 
   try {
-    // --- Phase 1: PREPARE ---
     try {
       await ordersClient.query('BEGIN');
       await ordersClient.query(
-        'INSERT INTO orders (user_id, product_id, quantity, status) VALUES ($1, $2, $3, $4)',
-        [user_id, product_id, quantity, 'pending']
+        'INSERT INTO orders (user_id, product_id, quantity, status, delivery_address, payment_method) VALUES ($1, $2, $3, $4, $5, $6)',
+        [user_id, product_id, quantity, 'pending', delivery_address || null, 'COD']
       );
       await ordersClient.query(`PREPARE TRANSACTION '${txnOrders}'`);
       ordersPrepared = true;
-    } catch (e) {
-      console.error('Orders PREPARE failed:', e.message);
-    }
+    } catch (e) { console.error('Orders PREPARE failed:', e.message); }
 
     try {
       await productsClient.query('BEGIN');
-      const stockResult = await productsClient.query(
-        'SELECT stock FROM products WHERE id = $1 FOR UPDATE',
-        [product_id]
-      );
-      if (stockResult.rows.length === 0) {
-        throw new Error('product not found');
-      }
+      const stockResult = await productsClient.query('SELECT stock FROM products WHERE id = $1 FOR UPDATE', [product_id]);
+      if (stockResult.rows.length === 0) throw new Error('product not found');
       const stock = stockResult.rows[0].stock;
-      if (stock < quantity) {
-        throw new Error(`insufficient stock (have ${stock}, need ${quantity})`);
-      }
-      await productsClient.query(
-        'UPDATE products SET stock = stock - $1 WHERE id = $2',
-        [quantity, product_id]
-      );
+      if (stock < quantity) throw new Error(`insufficient stock (have ${stock}, need ${quantity})`);
+      await productsClient.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [quantity, product_id]);
       await productsClient.query(`PREPARE TRANSACTION '${txnProducts}'`);
       productsPrepared = true;
-    } catch (e) {
-      console.error('Products PREPARE failed:', e.message);
-    }
+    } catch (e) { console.error('Products PREPARE failed:', e.message); }
 
-    // --- Phase 2: COMMIT or ABORT ---
     if (ordersPrepared && productsPrepared) {
       await ordersClient.query(`COMMIT PREPARED '${txnOrders}'`);
       await productsClient.query(`COMMIT PREPARED '${txnProducts}'`);
-      res.status(201).json({ status: 'committed', message: 'Order placed successfully' });
+      res.status(201).json({ status: 'committed', message: 'Order placed successfully (Cash on Delivery)' });
     } else {
-      if (ordersPrepared) {
-        await ordersClient.query(`ROLLBACK PREPARED '${txnOrders}'`);
-      }
-      if (productsPrepared) {
-        await productsClient.query(`ROLLBACK PREPARED '${txnProducts}'`);
-      }
-      res.status(409).json({
-        status: 'aborted',
-        message: 'Order could not be placed - no partial changes were made',
-      });
+      if (ordersPrepared) await ordersClient.query(`ROLLBACK PREPARED '${txnOrders}'`);
+      if (productsPrepared) await productsClient.query(`ROLLBACK PREPARED '${txnProducts}'`);
+      res.status(409).json({ status: 'aborted', message: 'Order could not be placed - no partial changes were made' });
     }
   } finally {
     ordersClient.release();
@@ -259,6 +278,4 @@ app.post('/orders', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`ShardCore API listening on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`ShardCore API listening on http://localhost:${PORT}`));
