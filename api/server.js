@@ -278,4 +278,79 @@ app.post('/orders', requireAuth, async (req, res) => {
   }
 });
 
+// --- Order status management (admin-only) ---
+// This is a single-node update (only the Orders node's own row changes),
+// so it does NOT go through 2PC — unlike placing an order, which touches
+// both Orders and Products and needs that atomicity guarantee. Updating
+// a status field here never needs a second node to agree.
+const VALID_ORDER_STATUSES = ['pending', 'shipped', 'delivered', 'cancelled'];
+
+app.patch('/orders/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (!VALID_ORDER_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
+  }
+  try {
+    const result = await pools.orders.query('UPDATE orders SET status = $1 WHERE id = $2 RETURNING *', [status, id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Order not found' });
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- User deletion (admin-only) ---
+app.delete('/users/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pools.users.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    // Note: orders.user_id is not a foreign key (cross-node, same reasoning
+    // as products — see docs/partitioning.md), so existing orders placed by
+    // a deleted user are left as historical records, not cascaded.
+    res.json({ ok: true, deletedId: result.rows[0].id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- Admin dashboard stats: a genuine cross-node aggregation ---
+// No single node has both order quantities (Orders node) and product
+// prices (Products node), so computing "total order value" requires the
+// API layer to pull from both and join them in memory — a small, honest
+// example of the kind of work a Coordinator does that a single database
+// instance wouldn't need to.
+app.get('/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    const [ordersResult, productsResult, usersResult] = await Promise.all([
+      routedQuery('orders'),
+      routedQuery('products'),
+      routedQuery('users'),
+    ]);
+
+    const priceByProductId = {};
+    for (const p of productsResult.rows) priceByProductId[p.id] = Number(p.price);
+
+    let totalOrderValue = 0;
+    const statusCounts = { pending: 0, shipped: 0, delivered: 0, cancelled: 0 };
+    for (const o of ordersResult.rows) {
+      const price = priceByProductId[o.product_id] || 0;
+      totalOrderValue += price * o.quantity;
+      if (statusCounts[o.status] !== undefined) statusCounts[o.status]++;
+    }
+
+    const lowStockCount = productsResult.rows.filter(p => p.stock > 0 && p.stock <= 3).length;
+    const outOfStockCount = productsResult.rows.filter(p => p.stock <= 0).length;
+
+    res.json({
+      totalOrderValue: totalOrderValue.toFixed(2),
+      orderCount: ordersResult.rows.length,
+      userCount: usersResult.rows.length,
+      productCount: productsResult.rows.length,
+      lowStockCount,
+      outOfStockCount,
+      statusCounts,
+    });
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`ShardCore API listening on http://localhost:${PORT}`));
