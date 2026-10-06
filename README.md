@@ -9,7 +9,7 @@ All core MVP components are implemented and have been verified live against a re
 - **3 independent PostgreSQL clusters** (node1/5433, node2/5434, node3/5435), each with its own data directory, each owning one business domain's table.
 - **`core/src/main.cpp`** — a per-node process using `libpqxx` to connect to its own node's PostgreSQL database (not an in-memory placeholder). Started as `./main 1`, `./main 2`, or `./main 3`.
 - **`core/src/coordinator.cpp`** — the real Coordinator. It connects to all 3 nodes simultaneously and provides:
-  - request routing by domain, with **automatic failover**: if a domain's primary node is unreachable, reads are transparently served from the node holding its replicated copy instead.
+  - request routing by domain, with **automatic failover**: if a domain's primary node is unreachable, reads are transparently served from the node holding its replicated copy instead. 
   - **real Two-Phase Commit** (`PREPARE TRANSACTION` / `COMMIT PREPARED` / `ROLLBACK PREPARED`) for placing an order across the Orders and Products nodes — both the commit path and the abort path (e.g. insufficient stock, or a dead node) have been tested and leave no partial state.
   - **continuous heartbeat monitoring** (`./coordinator --watch`): pings every node on an interval and detects both failure and recovery without the Coordinator being restarted.
 - **PostgreSQL logical replication** is live in the ring topology described below (Users → node2, Products → node3, Orders → node1), set up via `scripts/setup_replication.sh`. Verified: an insert on a source table appears on its replica within seconds, and a node's data survives that node being killed.
