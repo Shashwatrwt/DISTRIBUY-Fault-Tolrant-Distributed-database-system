@@ -213,9 +213,19 @@ app.delete('/products/:id', requireAdmin, async (req, res) => {
 });
 
 // --- Orders ---
-app.get('/orders', async (req, res) => {
-  try { res.json(await routedQuery('orders')); }
-  catch (e) { res.status(503).json({ error: e.message }); }
+// Requires login: an admin sees every order (needed for the Order Manager
+// dashboard), but a consumer only ever sees their own orders — this also
+// closes a previous gap where this endpoint was public and unauthenticated,
+// exposing every customer's delivery address to anyone who called it.
+app.get('/orders', requireAuth, async (req, res) => {
+  try {
+    const result = await routedQuery('orders');
+    if (req.session.role === 'admin') {
+      return res.json(result);
+    }
+    const ownOrders = result.rows.filter(o => o.user_id === req.session.userId);
+    res.json({ source: result.source, node: result.node, rows: ownOrders });
+  } catch (e) { res.status(503).json({ error: e.message }); }
 });
 
 app.post('/orders', requireAuth, async (req, res) => {
