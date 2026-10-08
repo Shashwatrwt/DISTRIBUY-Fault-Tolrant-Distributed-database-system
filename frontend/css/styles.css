@@ -227,3 +227,14 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 
 /* Empty cart state */
 .cart-empty { text-align: center; color: var(--s-muted); padding: 40px 10px; font-size: 0.9rem; }
+
+/* My Orders (consumer order history) */
+.order-history-item { padding: 12px 0; border-bottom: 1px solid var(--s-border); }
+.order-history-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 8px; }
+.order-history-name { font-size: 0.88rem; font-weight: 600; }
+.order-history-meta { font-size: 0.75rem; color: var(--s-muted); margin-top: 2px; }
+.order-status-badge { font-size: 0.7rem; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.order-status-badge.status-pending { background: rgba(99,102,241,0.12); color: #6366f1; }
+.order-status-badge.status-shipped { background: rgba(245,158,11,0.15); color: #b45309; }
+.order-status-badge.status-delivered { background: rgba(34,197,94,0.15); color: #15803d; }
+.order-status-badge.status-cancelled { background: rgba(229,57,53,0.12); color: #c62828; }
