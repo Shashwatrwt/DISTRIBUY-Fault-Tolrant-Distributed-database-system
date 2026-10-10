@@ -152,9 +152,15 @@ app.get('/health', async (req, res) => {
 });
 
 // --- Users ---
-app.get('/users', async (req, res) => {
-  try { res.json(await routedQuery('users')); }
-  catch (e) { res.status(503).json({ error: e.message }); }
+// Admin-only, and only an explicit allow-list of columns is returned. This
+// endpoint used to be public and ran SELECT *, so it exposed every user's
+// email AND their bcrypt `password` hash to anyone who called it.
+app.get('/users', requireAdmin, async (req, res) => {
+  try {
+    const result = await routedQuery('users');
+    const rows = result.rows.map(({ id, name, email, created_at }) => ({ id, name, email, created_at }));
+    res.json({ ...result, rows });
+  } catch (e) { res.status(503).json({ error: e.message }); }
 });
 
 app.post('/users', requireAdmin, async (req, res) => {
