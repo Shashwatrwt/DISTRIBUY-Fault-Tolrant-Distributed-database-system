@@ -4,19 +4,22 @@ A distributed, fault-tolerant e-commerce system using PostgreSQL as the storage 
 
 ## Current Status
 
-All core MVP components are implemented and have been verified live against a real 3-node PostgreSQL cluster:
+The project is functionally complete against its MVP: a working distributed, fault-tolerant e-commerce backend with a customer storefront and an admin dashboard, verified live against a real 3-node PostgreSQL cluster.
 
-- **3 independent PostgreSQL clusters** (node1/5433, node2/5434, node3/5435), each with its own data directory, each owning one business domain's table.
-- **`core/src/main.cpp`** — a per-node process using `libpqxx` to connect to its own node's PostgreSQL database (not an in-memory placeholder). Started as `./main 1`, `./main 2`, or `./main 3`.
-- **`core/src/coordinator.cpp`** — the real Coordinator. It connects to all 3 nodes simultaneously and provides:
-  - request routing by domain, with **automatic failover**: if a domain's primary node is unreachable, reads are transparently served from the node holding its replicated copy instead. 
-  - **real Two-Phase Commit** (`PREPARE TRANSACTION` / `COMMIT PREPARED` / `ROLLBACK PREPARED`) for placing an order across the Orders and Products nodes — both the commit path and the abort path (e.g. insufficient stock, or a dead node) have been tested and leave no partial state.
-  - **continuous heartbeat monitoring** (`./coordinator --watch`): pings every node on an interval and detects both failure and recovery without the Coordinator being restarted.
-- **PostgreSQL logical replication** is live in the ring topology described below (Users → node2, Products → node3, Orders → node1), set up via `scripts/setup_replication.sh`. Verified: an insert on a source table appears on its replica within seconds, and a node's data survives that node being killed.
-- **`api/server.js`** — a Node.js/Express REST API (`/health`, `/users`, `/products`, `/orders`) implementing the same routing, failover, and 2PC logic as the C++ Coordinator, with CORS enabled for browser access. All endpoints tested live, including placing a real order over HTTP.
-- **`frontend/index.html`** — a React dashboard (cluster health, live tables, a 2PC-backed order form) that calls the REST API directly, tested in-browser including a live kill-a-node failover demo.
+**Distributed database layer**
 
-What's not yet built: WAL-based crash recovery logic beyond what PostgreSQL itself provides, and any of the stretch goals (leader election, dynamic sharding, multi-machine deployment) — these remain out of scope unless time permits, per the MVP/Stretch split below.
+- **3 independent PostgreSQL clusters** (node1/5433 Users, node2/5434 Products, node3/5435 Orders), each owning one business domain's table.
+- **Coordinator** (`core/src/coordinator.cpp`, C++ / `libpqxx`): routes requests by domain, reports quorum-based cluster health, runs **real Two-Phase Commit** (`PREPARE TRANSACTION` / `COMMIT PREPARED` / `ROLLBACK PREPARED`) for orders across the Orders and Products nodes (commit and abort paths both verified), **fails reads over to the replica node** when a primary is unreachable, and does **continuous heartbeat monitoring** (`--watch`) that detects both failure and recovery without a restart.
+- **PostgreSQL logical replication ring** (Users to node2, Products to node3, Orders to node1), set up by `scripts/setup_replication.sh`.
+- **Per-node process** (`core/src/main.cpp`): connects to its own node's database via `libpqxx`.
+
+**Application layer**
+
+- **REST API** (`api/server.js`, Node.js/Express): the same routing, failover and 2PC logic over HTTP, plus real authentication (consumer sign-up/login with bcrypt-hashed passwords, a separate admin login, token sessions) and server-side authorization. Consumers can only read their own orders; admin-only routes are enforced on the server, not just hidden in the UI.
+- **Storefront** (`frontend/`): login page (Consumer / Admin), product search, cart, checkout with a delivery address (Cash on Delivery), and a "My Orders" view with live status (placed / shipped / delivered / cancelled).
+- **Admin dashboard**: Overview (stats, including an order-value total computed by joining Orders and Products across two nodes, plus live cluster health), and Products / Orders / Users management (add, edit and delete products; update order status; delete users).
+
+Not built, by design: see **Known limitations** and the stretch goals below.
 
 ## The core problem you're solving
 
@@ -140,7 +143,7 @@ This prevents half-finished updates.
 
 - detection: the coordinator pings nodes using heartbeats
 - failover: traffic is redirected to the replica of a failed node
-- recovery: PostgreSQL replays its WAL when a node restarts; the Coordinator checks replication status, syncs missed updates, and only then returns the node to service
+- recovery: PostgreSQL replays its WAL when a node restarts and logical replication catches it up on its own; the Coordinator's heartbeat notices the node answering again and resumes routing to it (it does not itself measure replication lag)
 
 This complete lifecycle has been demonstrated live: killing node2's PostgreSQL cluster mid-session causes the Coordinator's heartbeat loop to detect it within seconds, reads automatically fail over to node3 (which holds the replicated Products data), writes correctly refuse to go through the dead primary, and restarting node2 is automatically detected as a recovery.
 
@@ -149,8 +152,8 @@ This complete lifecycle has been demonstrated live: killing node2's PostgreSQL c
 | OS topic | Where it appears |
 |---|---|
 | Processes | each node, coordinator, and API server is a separate process |
-| Threads | nodes handle multiple client requests concurrently |
-| Synchronization | mutexes/locks prevent race conditions |
+| Threads / concurrency | concurrent requests are handled by the API's async event loop and by PostgreSQL's per-connection backend processes; the C++ Coordinator itself is single-threaded |
+| Synchronization | PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) prevent race conditions such as overselling the last item |
 | IPC | nodes and coordinator communicate via TCP sockets |
 | Deadlock | could arise when transactions wait for locks |
 | File management | each PostgreSQL node persists tables and WAL in its own data directory |
@@ -211,42 +214,93 @@ ShardCore/
 │   └── src/
 │       ├── main.cpp          # per-node process (libpqxx connection to its own DB)
 │       ├── coordinator.cpp   # Coordinator: routing, failover, 2PC, heartbeat monitoring
-│       └── cluster.h         # shared topology/replica-map definitions
+│       └── cluster.h         # shared topology / replica-map definitions
 ├── api/
-│   ├── server.js             # Express REST API (health, users, products, orders)
+│   ├── server.js             # Express REST API: auth, routing, failover, 2PC
 │   └── package.json
 ├── frontend/
-│   └── index.html            # React dashboard (CDN-based, no build step)
+│   ├── index.html            # shell; loads the files below
+│   ├── css/styles.css
+│   └── js/                   # api.js, auth.js, components.js, app.js (React via CDN, no build step)
 ├── scripts/
-│   └── setup_replication.sh  # reproducible logical replication ring setup
-├── docs/                     # planned architecture and design notes
+│   ├── setup_replication.sh  # first-time setup of the logical replication ring
+│   ├── reset_catalog.sh      # replaces ALL products with 22 sample items
+│   └── seed_products.sh      # adds a few extra sample products
+├── docs/
+│   └── partitioning.md       # partitioning strategy and trade-offs
 └── .gitignore
 ```
 
 ## Current local build and run
 
-Everything below runs through WSL2/Ubuntu, against 3 local PostgreSQL clusters on ports 5433/5434/5435 (`wal_level = logical` and `max_prepared_transactions > 0` must be set on all 3, per `scripts/setup_replication.sh`'s prerequisites).
+Everything runs on WSL2/Ubuntu against three local PostgreSQL clusters on ports 5433, 5434 and 5435.
 
-**Per-node process** (mainly for demonstrating the per-node connection in isolation):
-```bash
-g++ -Wall -Wextra core/src/main.cpp -o core/src/main -lpqxx -lpq
-./core/src/main 1   # Users node
-./core/src/main 2   # Products & Inventory node
-./core/src/main 3   # Orders & Payments node
+### Prerequisites (one-time)
+
+- Packages: `postgresql`, `build-essential`, `libpqxx-dev`, `nodejs`, `npm`, `python3`.
+- Three clusters (for example `sudo pg_createcluster 18 node1 -p 5433`, then node2 on 5434 and node3 on 5435), each with `wal_level = logical` and `max_prepared_transactions` greater than 0 in its `postgresql.conf`, then restarted.
+- The `postgres` user on each node uses the password `kvara` (local development only, see Known limitations).
+- The base tables, one per node:
+
+```sql
+-- node1 (5433)
+CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(), password TEXT);
+-- node2 (5434)
+CREATE TABLE products (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price NUMERIC(10,2) NOT NULL,
+                       stock INT NOT NULL DEFAULT 0);
+-- node3 (5435)
+CREATE TABLE orders (id SERIAL PRIMARY KEY, user_id INT NOT NULL, product_id INT NOT NULL,
+                     quantity INT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                     created_at TIMESTAMP DEFAULT NOW(), delivery_address TEXT,
+                     payment_method TEXT DEFAULT 'COD');
 ```
 
-**Coordinator** (the real distributed-systems core — connects to all 3 nodes, routes, fails over, runs 2PC):
+- The replication ring: run `scripts/setup_replication.sh` once, for first-time setup only. It drops and recreates every publication and subscription, so do not re-run it on a cluster whose replication is already healthy (the script's header explains this).
+
+### Run
+
+**1. Coordinator** (C++): one-shot demo, or continuous monitoring.
+
 ```bash
 g++ -Wall -Wextra core/src/coordinator.cpp -o core/src/coordinator -lpqxx -lpq
-./core/src/coordinator           # one-shot: health check, routed queries, a 2PC order demo
+./core/src/coordinator           # health check, routed queries, a 2PC order demo
 ./core/src/coordinator --watch   # continuous heartbeat monitoring (Ctrl+C to stop)
 ```
 
-**REST API + frontend** (the demoable, browser-facing layer):
+**2. REST API** (http://localhost:4000):
+
 ```bash
-cd api && npm install && node server.js   # http://localhost:4000
+cd api && npm install && node server.js
 ```
-Then open `frontend/index.html` directly in a browser (no build step required).
+
+**3. Frontend** (http://localhost:8080). The page loads separate JS/CSS files, so it must be served over HTTP; opening `index.html` directly from disk will not work.
+
+```bash
+cd frontend && python3 -m http.server 8080
+```
+
+After changing a frontend file, hard-refresh the browser (Ctrl+Shift+R), otherwise it may keep showing the cached old version.
+
+**4. Sample catalog** (optional): `./scripts/reset_catalog.sh` replaces all products with 22 sample items. It truncates the `products` table first.
+
+**Accounts:** the admin login is `admin` / `admin123`. Consumers create their own account with **Sign Up**.
+
+### Failover demo
+
+With the API and frontend running, log in as admin and open **Overview**, then in a terminal:
+
+```bash
+sudo pg_ctlcluster 18 node2 stop     # kill the Products node
+```
+
+Within a few seconds the Products node shows **DOWN**, while the cluster stays **AVAILABLE** (2 of 3 nodes, quorum 2). The storefront still lists products, now served from node3's replicated copy (the admin tables are tagged "served from replica"), but checkout is refused, because 2PC needs the Products primary. Then:
+
+```bash
+sudo pg_ctlcluster 18 node2 start    # bring it back
+```
+
+Health returns to all UP and normal routing resumes. `./core/src/coordinator --watch` prints the same DOWN and RECOVERED transitions in the terminal.
 
 ## Development roadmap
 
@@ -255,10 +309,21 @@ Then open `frontend/index.html` directly in a browser (no build step required).
 3. ✅ connect the Coordinator to PostgreSQL-backed nodes (via `libpqxx`, over TCP)
 4. ✅ add ring replication and replication-status monitoring
 5. ✅ add distributed transactions with PostgreSQL 2PC
-6. ✅ add concurrency control (via Postgres row-level locking, `FOR UPDATE`), failure detection, failover, and recovery
-7. ✅ build the REST API and connect it to the Coordinator's logic
-8. ✅ build the frontend and core e-commerce flows (browse, place order)
-9. remaining: admin-dashboard polish, written partitioning documentation, and any stretch goals as time permits
+6. ✅ add concurrency control (Postgres row-level locking, `FOR UPDATE`), failure detection, failover, and recovery
+7. ✅ build the REST API (with authentication and role-based authorization)
+8. ✅ build the frontend: storefront (search, cart, checkout, order tracking) and admin dashboard
+9. optional, only if time permits: the stretch goals above
+
+## Known limitations
+
+- **Authentication is deliberately basic.** Real server-side checks exist (bcrypt-hashed passwords, admin-only routes enforced by the API, consumers limited to their own orders, `GET /users` admin-only and free of password hashes). But sessions are random tokens held in the API process's memory, so they are lost when the API restarts and never expire; tokens are kept in the browser's `localStorage`; the admin credentials and the database password are hardcoded in the source for local development; and there is no HTTPS, rate limiting, password-strength rule or password reset.
+- **The Coordinator/API is a single point of failure.** The database nodes are fault-tolerant; the process that coordinates them is not. If the API dies between `PREPARE TRANSACTION` and `COMMIT PREPARED`, a prepared transaction can be left in doubt (visible in `pg_prepared_xacts`), and nothing resolves it automatically. A recovery sweep on startup would fix this and is out of scope.
+- **Failover is read-only.** A dead node's data can still be read from its replica, but writes to that domain are refused until its primary returns (replicas are read-only subscribers), so placing an order requires both the Orders and Products primaries. There is no leader election or replica promotion.
+- **Replica schemas are maintained by hand.** Logical replication copies data, not schema changes. If a column is added to a primary table, add it to the replica table with `ALTER TABLE`; re-running `setup_replication.sh` does not fix a mismatch and would tear down healthy replication.
+- **No cross-node referential integrity.** `orders.user_id` and `orders.product_id` are not foreign keys (Postgres cannot enforce them across separate instances; see `docs/partitioning.md`), so deleting a user or product leaves historical orders pointing at an id that no longer exists.
+- **Recovery relies on PostgreSQL.** A restarted node replays its own WAL and logical replication catches it up; the Coordinator's heartbeat notices the node answering again and resumes routing to it, but does not itself measure replication lag.
+- **Scope of testing.** Built and verified as a single-machine demo with three PostgreSQL instances; it has not been load-tested or run across multiple machines.
+- **Storefront cosmetics.** The crossed-out "original price" and "12% off" are computed from the real price for display only; there is no discount logic. The cart lives in the browser and is lost on refresh. Payment is Cash on Delivery only.
 
 ## License
 
@@ -267,8 +332,3 @@ No license has been selected yet.
 ## Contributing
 
 Contributions are welcome as the project grows. For now, the work is focused on learning by building the system incrementally and validating each step with small code changes.
-
-
-## Known limitations
-
-- **The admin login is a UI convenience, not real security.** The frontend's Admin/System tab is gated by a hardcoded username/password checked entirely in client-side JavaScript. This stops a casual visitor from stumbling into the admin view during a demo, but it is trivially bypassable by anyone who reads the page's source — it is not a substitute for real authentication. The REST API's write endpoints (`POST /users`, `POST /products`) have no server-side authorization check at all: any client that knows the API's URL can call them directly, regardless of what the frontend shows. A production version of this system would need server-issued sessions or tokens, validated on the API side, before any endpoint beyond basic read access is granted. This was left out of scope for this project, which focuses on the distributed-systems layer (partitioning, replication, 2PC, failover) rather than application-level security.
