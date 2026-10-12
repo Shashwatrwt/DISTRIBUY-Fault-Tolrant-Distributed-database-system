@@ -7,13 +7,6 @@
 #include <thread>
 #include <chrono>
 #include "cluster.h"
-
-// The Coordinator is the "brain" described in the README: the application
-// layer talks only to this process, never to a node directly. It holds a
-// live connection to every node at once, routes each request to the node
-// that owns the relevant domain, and — as of this version — automatically
-// redirects reads to a replica node when the primary is unreachable.
-
 class NodeConnection {
 public:
     NodeConnection(const NodeConfig& config, const std::string& user, const std::string& password)
@@ -26,11 +19,6 @@ public:
             " dbname=postgres";
         try_reconnect();
     }
-
-    // Attempts to (re)establish the connection. Used both at startup and
-    // by the heartbeat loop when a previously-dead node might have come
-    // back up — without this, a node that failed once would stay marked
-    // dead forever, even after a real recovery.
     bool try_reconnect() {
         try {
             conn_ = std::make_unique<pqxx::connection>(conn_str_);
@@ -42,12 +30,6 @@ public:
             return false;
         }
     }
-
-    // A real liveness check: actually runs a trivial query against the
-    // node rather than just checking whether the last-known connection
-    // object still looks open. This is what the heartbeat loop calls
-    // periodically. If the node is currently marked dead, this also
-    // attempts a reconnect, so recovery is detected automatically.
     bool ping() {
         if (!conn_ || !conn_->is_open()) {
             alive_ = try_reconnect();
@@ -65,9 +47,6 @@ public:
         return alive_;
     }
 
-    // Fast, cached status — does NOT hit the network. Reflects the
-    // result of the most recent ping() (or the initial connection
-    // attempt if ping() has never been called yet).
     bool is_alive() const {
         return alive_;
     }
@@ -79,11 +58,6 @@ public:
     pqxx::connection& raw_connection() {
         return *conn_;
     }
-
-    // Queries a specific table on this connection. Generalized (rather than
-    // always querying this node's OWN domain table) so a replica node's
-    // connection can also be used to read another domain's replicated data
-    // during failover.
     std::size_t query_table(const std::string& table) {
         if (!is_alive()) {
             std::cerr << "  [ERROR] Node " << config_.node_id << " is not connected.\n";
@@ -130,12 +104,6 @@ public:
             );
         }
     }
-
-    // Routes a request to the node that owns the given domain. If that
-    // node is unreachable, automatically falls back to the node that
-    // holds a replicated copy of this domain's data (per the ring
-    // topology), so a single node failure doesn't make the data
-    // unavailable for reads — only writes still require the real owner.
     void route_and_query(NodeDomain domain) {
         auto it = connections_.find(domain);
         if (it == connections_.end()) {
@@ -153,7 +121,6 @@ public:
             return;
         }
 
-        // --- Primary is down: attempt automatic failover to the replica ---
         std::cout << "  Status: PRIMARY UNREACHABLE - attempting failover...\n";
 
         auto replica_domain_it = replica_map_.find(domain);
@@ -271,11 +238,6 @@ public:
             return false;
         }
     }
-
-    // Pings every node once. This is what a continuous heartbeat loop
-    // calls on each tick — it's the piece that lets the Coordinator
-    // notice BOTH a node dying AND a node recovering, without needing
-    // to be restarted.
     void heartbeat_tick() {
         for (auto& [domain, conn] : connections_) {
             bool was_alive = conn->is_alive();
@@ -322,11 +284,6 @@ int main(int argc, char* argv[]) {
     Coordinator coordinator(metadata);
 
     if (watch_mode) {
-        // Continuous heartbeat monitoring: re-check every node's liveness
-        // on a fixed interval, printing only when a node's status actually
-        // changes (goes down or recovers) plus a periodic health summary.
-        // This is the piece that makes failure detection real over time,
-        // rather than only checked once at process startup.
         const int interval_seconds = 3;
         std::cout << "\n[WATCH MODE] Heartbeat interval: " << interval_seconds
                    << "s. Press Ctrl+C to stop.\n";
@@ -340,7 +297,6 @@ int main(int argc, char* argv[]) {
             std::cout.flush();
             std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
         }
-        // unreachable, loop runs until Ctrl+C
     }
 
     coordinator.print_cluster_health();
