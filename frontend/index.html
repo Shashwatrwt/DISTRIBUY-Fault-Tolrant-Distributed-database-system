@@ -11,22 +11,6 @@
 </head>
 <body>
 <div id="root"></div>
-
-<!--
-  Loaded in order: api.js defines shared fetch/session helpers first,
-  components.js defines the Shop/Admin views next, auth.js defines the
-  login page, and app.js (last) defines App and renders it. Classic
-  <script> tags share one global scope, so each file's top-level
-  functions/consts are visible to the ones loaded after it.
-
-  NOTE: because these are separate files loaded via src=, open this page
-  through a local web server (NOT by double-clicking index.html). Browsers
-  block script fetches from file:// pages. From this frontend/ folder, run
-  one of:
-    npx http-server -p 8080
-    python3 -m http.server 8080
-  then visit http://localhost:8080 in your browser.
--->
 <script type="text/babel" src="js/api.js"></script>
 <script type="text/babel" src="js/components.js"></script>
 <script type="text/babel" src="js/auth.js"></script>
