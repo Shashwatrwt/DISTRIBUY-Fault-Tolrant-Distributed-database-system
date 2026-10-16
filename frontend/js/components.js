@@ -1,16 +1,4 @@
-// components.js — the Shop (customer, modern Amazon/Flipkart-style storefront
-// with a cart drawer) and the Admin/System dashboard. Depends on globals
-// from api.js (apiFetch, useApi), loaded earlier.
-
 const { useState: useState2, useEffect: useEffect2 } = React;
-
-// Picks an emoji that actually matches the product, by looking for
-// keywords in its name — rather than the old approach of cycling through
-// a fixed list by id, which had no relationship to what the product was.
-// Checked in order, so more specific keywords (e.g. "mouse pad") are
-// matched before more general ones (e.g. "mouse"). Falls back to a plain
-// box for any product name that doesn't match anything here — this will
-// matter for new products an admin adds later through "Add Product".
 const EMOJI_KEYWORDS = [
   ["mouse pad", "🎮"],
   ["mouse", "🖱️"],
@@ -48,15 +36,8 @@ function emojiFor(name) {
   for (const [keyword, emoji] of EMOJI_KEYWORDS) {
     if (lower.includes(keyword)) return emoji;
   }
-  return "📦"; // generic fallback for anything unrecognized
+  return "📦";
 }
-
-// A cosmetic "original price" used only to show a strikethrough/savings
-// line, computed deterministically from the real price (no fabricated
-// external data — just a consistent 12% markup shown as crossed out,
-// a common real-world storefront pattern). This does not affect what is
-// actually charged; the real price (product.price) is what's sent to the
-// API and what the Coordinator uses for its 2PC transaction.
 function fakeMrp(price) { return (Number(price) * 1.12).toFixed(2); }
 
 // ============== SHOP: header, product grid, cart drawer ==============
@@ -72,13 +53,6 @@ function Stepper({ value, min, max, onChange }) {
 }
 
 function ShopProductCard({ product, cartQty, onAddToCart }) {
-  // "remaining" accounts for what the user has already put in their cart,
-  // not just the raw stock number — this is what stops someone clicking
-  // "Add to Cart" repeatedly and silently exceeding real availability.
-  // The authoritative check still happens server-side, inside the 2PC
-  // transaction's `SELECT ... FOR UPDATE` at checkout — this is purely a
-  // UI-level courtesy so the cart reflects reality before the user even
-  // gets to that point.
   const remaining = Math.max(0, product.stock - cartQty);
   const [qty, setQty] = useState2(remaining > 0 ? 1 : 0);
 
@@ -113,7 +87,7 @@ function ShopProductCard({ product, cartQty, onAddToCart }) {
 }
 
 function CartDrawer({ cart, onClose, onRemove, onCheckoutDone }) {
-  const [step, setStep] = useState2("review"); // "review" | "address"
+  const [step, setStep] = useState2("review");
   const [address, setAddress] = useState2("");
   const [city, setCity] = useState2("");
   const [pincode, setPincode] = useState2("");
@@ -129,12 +103,6 @@ function CartDrawer({ cart, onClose, onRemove, onCheckoutDone }) {
     setResults(null);
     const fullAddress = `${address}, ${city} - ${pincode} (Phone: ${phone})`;
     const outcomes = [];
-
-    // Each cart line is placed as its own real, independent 2PC transaction
-    // across the Orders and Products nodes. A multi-item checkout therefore
-    // runs several real distributed transactions in sequence, each able to
-    // succeed or abort on its own (e.g. if stock ran out for just one item
-    // between adding it to the cart and checking out).
     for (const item of cart) {
       try {
         await apiFetch("/orders", {
@@ -285,9 +253,6 @@ function ShopView({ userName, onLogout }) {
   const [search, setSearch] = useState2("");
 
   const addToCart = (product, qty, remaining) => {
-    // Defense in depth: even though the card's Stepper already limits qty
-    // to `remaining`, we clamp again here in case of a stale render (e.g.
-    // stock changed via the 5s poll between render and click).
     const safeQty = Math.max(0, Math.min(qty, remaining));
     if (safeQty <= 0) return;
     setCart(prev => {
@@ -351,8 +316,6 @@ function ShopView({ userName, onLogout }) {
     </div>
   );
 }
-
-// ============== ADMIN / SYSTEM ==============
 
 function ClusterHealth() {
   const { data, error } = useApi("/health", 3000);
@@ -629,7 +592,7 @@ function UserManager({ bump }) {
 
 function AdminView() {
   const [refreshKey, setRefreshKey] = useState2(0);
-  const [adminTab, setAdminTab] = useState2("overview"); // overview | products | orders | users
+  const [adminTab, setAdminTab] = useState2("overview");
   const bump = () => setRefreshKey(k => k + 1);
 
   const TABS = [
