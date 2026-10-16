@@ -1,16 +1,7 @@
-// app.js — the top-level App component and the ReactDOM render call.
-// Loaded last, after api.js, components.js, and auth.js have defined
-// everything this file uses.
-//
-// The Shop view renders full-bleed with its own header/theme (it's a
-// storefront, not a dashboard), while the Admin view keeps the dark
-// dashboard shell with a shared topbar — deliberately different look and
-// feel for two different audiences.
-
 const { useState: useState4, useEffect: useEffect4 } = React;
 
 function App() {
-  const [session, setSession] = useState4(undefined); // undefined = still checking, null = logged out
+  const [session, setSession] = useState4(undefined);
 
   useEffect4(() => {
     setSession(loadSession());
@@ -52,5 +43,4 @@ function App() {
 
   return <ShopView userName={session.user ? session.user.name : "there"} onLogout={handleLogout} />;
 }
-
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
