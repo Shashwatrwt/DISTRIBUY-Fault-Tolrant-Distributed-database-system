@@ -1,6 +1,3 @@
-// auth.js — the entry-point login page: pick a role (Consumer or Admin),
-// then either log in or (consumers only) sign up for a new account.
-
 const { useState: useState3 } = React;
 
 function ConsumerLoginForm({ onAuthenticated }) {
@@ -85,8 +82,8 @@ function AdminLoginForm({ onAuthenticated }) {
 }
 
 function LoginPage({ onAuthenticated }) {
-  const [role, setRole] = useState3("consumer"); // "consumer" | "admin"
-  const [mode, setMode] = useState3("login"); // "login" | "signup" (consumer only)
+  const [role, setRole] = useState3("consumer");
+  const [mode, setMode] = useState3("login");
 
   return (
     <div className="login-shell">
