@@ -1,6 +1,3 @@
-#!/bin/bash
-# scripts/seed_products.sh — adds a more realistic product catalog.
-# Safe to re-run; it just inserts more rows each time.
 sudo -u postgres psql -p 5434 -c "INSERT INTO products (name, price, stock) VALUES
   ('USB-C Hub', 1299.00, 12),
   ('27-inch Monitor', 15999.00, 4),
