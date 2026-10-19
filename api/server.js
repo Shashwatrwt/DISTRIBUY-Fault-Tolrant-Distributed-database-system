@@ -369,4 +369,4 @@ app.get('/admin/stats', requireAdmin, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`ShardCore API listening on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Distribuy API listening on http://localhost:${PORT}`));
