@@ -208,7 +208,7 @@ Complex recovery optimizations remain optional and can be considered after the M
 ## Repository structure
 
 ```text
-ShardCore/
+Distribuy/
 ├── README.md
 ├── core/
 │   └── src/
