@@ -224,8 +224,7 @@ Distribuy/
 │   └── js/                   # api.js, auth.js, components.js, app.js (React via CDN, no build step)
 ├── scripts/
 │   ├── setup_replication.sh  # first-time setup of the logical replication ring
-│   ├── reset_catalog.sh      # replaces ALL products with 22 sample items
-│   └── seed_products.sh      # adds a few extra sample products
+│   └── reset_catalog.sh      # replaces ALL products with 22 sample items
 ├── docs/
 │   └── partitioning.md       # partitioning strategy and trade-offs
 └── .gitignore
