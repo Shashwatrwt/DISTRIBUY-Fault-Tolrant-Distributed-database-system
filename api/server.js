@@ -53,7 +53,6 @@ async function routedQuery(domain) {
   throw new Error(`${domain} is unreachable and no live replica was found`);
 }
 
-// One-time migrations (safe to run repeatedly — IF NOT EXISTS).
 (async () => {
   try {
     await pools.users.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;');
@@ -227,7 +226,7 @@ app.post('/orders', requireAuth, async (req, res) => {
   if (!user_id || !product_id || !quantity) {
     return res.status(400).json({ error: 'product_id and quantity are required' });
   }
-  // Admin's raw 2PC test form doesn't need a real delivery address.
+
   if (req.session.role !== 'admin' && !delivery_address) {
     return res.status(400).json({ error: 'delivery_address is required' });
   }
@@ -295,7 +294,6 @@ app.patch('/orders/:id', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- User deletion (admin-only) ---
 app.delete('/users/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
