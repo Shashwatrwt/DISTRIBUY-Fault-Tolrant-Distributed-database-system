@@ -277,7 +277,7 @@ private:
 int main(int argc, char* argv[]) {
     bool watch_mode = (argc > 1 && std::string(argv[1]) == "--watch");
 
-    std::cout << "=== ShardCore Coordinator starting ===\n";
+    std::cout << "=== Distribuy Coordinator starting ===\n";
     ClusterMetadata metadata = build_cluster_metadata();
 
     std::cout << "Connecting to all nodes...\n";
@@ -291,7 +291,7 @@ int main(int argc, char* argv[]) {
         while (true) {
             ++tick;
             coordinator.heartbeat_tick();
-            if (tick % 5 == 0) { // full health report every 5 ticks
+            if (tick % 5 == 0) {
                 coordinator.print_cluster_health();
             }
             std::cout.flush();
@@ -307,7 +307,7 @@ int main(int argc, char* argv[]) {
     coordinator.route_and_query(NodeDomain::Orders);
 
     std::cout << "\n--- Demo: placing an order via 2PC ---\n";
-    coordinator.place_order(/*user_id=*/1, /*product_id=*/1, /*quantity=*/1);
+    coordinator.place_order(1, 1, 1);
 
     std::cout << "\n=== Coordinator finished ===\n";
 

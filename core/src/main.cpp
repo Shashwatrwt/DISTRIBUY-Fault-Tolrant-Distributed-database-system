@@ -144,12 +144,8 @@ struct ReplicaMap {
     }
 };
 
-// --- NEW: PgStore replaces the old in-memory Store. It wraps a real ---
-// --- libpqxx connection to this node's own PostgreSQL cluster.       ---
 class PgStore {
 public:
-    // Builds the connection string and opens a real TCP connection to
-    // this node's Postgres instance (e.g. host=127.0.0.1 port=5433).
     PgStore(const std::string& host, int port,
             const std::string& user, const std::string& password,
             const std::string& dbname = "postgres") {
@@ -165,9 +161,6 @@ public:
     bool is_open() const {
         return conn_ && conn_->is_open();
     }
-
-    // Runs a single INSERT/UPDATE/DELETE statement inside its own
-    // transaction and commits it. Returns true on success.
     bool execute(const std::string& sql) {
         try {
             pqxx::work txn(*conn_);
@@ -179,9 +172,6 @@ public:
             return false;
         }
     }
-
-    // Runs a SELECT and returns the number of rows found. Prints each
-    // row's columns for now (useful for quick verification/demo output).
     std::size_t query_and_print(const std::string& sql) {
         try {
             pqxx::work txn(*conn_);
@@ -204,7 +194,6 @@ public:
 private:
     std::unique_ptr<pqxx::connection> conn_;
 };
-// --- END NEW ---
 
 struct LogEntry {
     std::string key;
@@ -283,9 +272,6 @@ Node build_node(const ClusterMetadata& metadata, int node_id) {
     return Node{local, peers};
 }
 
-// --- NEW: returns the table name each domain owns, and a sample row to insert. ---
-// This is just a small helper so main() can demo a real insert without
-// hardcoding domain-specific SQL inline.
 std::string table_for_domain(NodeDomain domain) {
     switch (domain) {
         case NodeDomain::Users:
@@ -297,7 +283,6 @@ std::string table_for_domain(NodeDomain domain) {
     }
     return "unknown";
 }
-// --- END NEW ---
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -346,7 +331,6 @@ int main(int argc, char* argv[]) {
     std::cout << "After one failure: " << (quorum_available(nodes_after_failure, quorum_size) ? "available" : "unavailable") << '\n';
     std::cout << "Domain: " << domain_name(node.config.domain) << '\n';
 
-    // --- NEW: real Postgres connection replaces the old in-memory Store ---
     std::cout << "\nConnecting to PostgreSQL at " << node.config.endpoint() << " ...\n";
     try {
         PgStore store(node.config.host, node.config.port, "postgres", "kvara");
@@ -356,7 +340,6 @@ int main(int argc, char* argv[]) {
             std::string table = table_for_domain(node.config.domain);
             std::cout << "Domain table: " << table << '\n';
 
-            // Insert one demo row appropriate to this node's domain, then read it back.
             if (node.config.domain == NodeDomain::Users) {
                 store.execute(
                     "INSERT INTO users (name, email) VALUES "
@@ -388,7 +371,6 @@ int main(int argc, char* argv[]) {
         std::cout << "PostgreSQL connection: FAILED (" << e.what() << ")\n";
         log.record("pg_connection", "failed");
     }
-    // --- END NEW ---
 
     std::cout << "\nTransaction log: " << log.size() << " entries\n";
     std::cout << "Recovery log model: " << (log_ready_for_recovery(log) ? "ready" : "empty") << '\n';
