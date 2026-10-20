@@ -1,7 +1,7 @@
 const API_BASE = "http://localhost:4000";
-const SESSION_KEY_TOKEN = "shardcore_token";
-const SESSION_KEY_ROLE = "shardcore_role";
-const SESSION_KEY_USER = "shardcore_user";
+const SESSION_KEY_TOKEN = "distribuy_token";
+const SESSION_KEY_ROLE = "distribuy_role";
+const SESSION_KEY_USER = "distribuy_user";
 
 function saveSession(token, role, user) {
   localStorage.setItem(SESSION_KEY_TOKEN, token);
@@ -31,7 +31,7 @@ async function apiFetch(path, options = {}) {
 
   const res = await fetch(API_BASE + path, Object.assign({}, options, { headers }));
   let json = {};
-  try { json = await res.json(); } catch (e) { /* no body */ }
+  try { json = await res.json(); } catch (e) {}
 
   if (!res.ok) {
     const err = new Error(json.error || json.message || ("Request failed with status " + res.status));

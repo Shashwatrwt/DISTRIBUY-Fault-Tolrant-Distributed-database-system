@@ -40,7 +40,6 @@ function emojiFor(name) {
 }
 function fakeMrp(price) { return (Number(price) * 1.12).toFixed(2); }
 
-// ============== SHOP: header, product grid, cart drawer ==============
 
 function Stepper({ value, min, max, onChange }) {
   return (
@@ -181,7 +180,7 @@ function ShopHeader({ userName, cartCount, onCartClick, onOrdersClick, onLogout,
   return (
     <div className="shop-topbar">
       <div className="shop-topbar-inner">
-        <div className="shop-logo">ShardCore<span>distributed. fault-tolerant.</span></div>
+        <div className="shop-logo">Distribuy<span>distributed. fault-tolerant.</span></div>
         <div className="shop-search">
           <input placeholder="Search products..." value={search} onChange={e => onSearchChange(e.target.value)} />
         </div>

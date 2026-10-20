@@ -19,9 +19,6 @@ h1 { font-size: 1.5rem; margin-bottom: 4px; }
 .topbar .who { font-size: 0.85rem; color: var(--muted); }
 .logout-link { color: var(--down); cursor: pointer; font-size: 0.85rem; font-weight: 600; }
 
-/* Admin dashboard section tabs — styled as clearly clickable pill buttons,
-   not the thin underline style used elsewhere (that style is for a quieter
-   secondary toggle; these need to read as primary navigation at a glance). */
 .tabs { display: flex; gap: 10px; flex-wrap: wrap; }
 .tab {
   padding: 10px 18px; cursor: pointer; font-size: 0.88rem; font-weight: 600;
@@ -62,7 +59,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 .full-width { grid-column: 1 / -1; }
 .refresh-note { font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
 
-/* Shop */
 .shop-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
 .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .product-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; }
@@ -76,7 +72,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 .qty-row input { width: 60px; text-align: center; }
 .cart-toast { position: fixed; bottom: 20px; right: 20px; background: var(--up); color: #063016; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
 
-/* Login page */
 .login-shell { display: flex; align-items: center; justify-content: center; min-height: 90vh; padding: 20px; }
 .login-box { width: 100%; max-width: 480px; padding: 40px 36px; }
 .login-box h1 { font-size: 1.8rem; }
@@ -90,11 +85,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 .auth-mode-toggle span { cursor: pointer; color: var(--muted); padding-bottom: 6px; }
 .auth-mode-toggle span.active { color: var(--text); border-bottom: 2px solid var(--accent); }
 
-/* ============================================================
-   SHOP THEME — a separate, light, modern storefront look.
-   Scoped under .shop-theme so it doesn't affect the Admin
-   dashboard, which intentionally keeps the dark "ops tool" look.
-   ============================================================ */
 .shop-theme {
   --s-bg: #f1f3f6;
   --s-surface: #ffffff;
@@ -113,7 +103,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 }
 .shop-theme .shop-inner { max-width: 1200px; margin: 0 auto; padding: 0 16px 60px; }
 
-/* Header */
 .shop-topbar {
   background: linear-gradient(90deg, var(--s-accent), #4f9cf9);
   color: white;
@@ -146,13 +135,11 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
   display: flex; align-items: center; justify-content: center; padding: 0 4px;
 }
 
-/* Promo strip */
 .shop-promo {
   background: var(--s-surface); border-bottom: 1px solid var(--s-border);
   text-align: center; font-size: 0.8rem; color: var(--s-muted); padding: 8px;
 }
 
-/* Product grid */
 .shop-section-title { font-size: 1.1rem; font-weight: 700; margin: 20px 0 14px; color: var(--s-text); }
 .shop-product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; }
 .shop-card {
@@ -196,7 +183,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
   font-size: 0.85rem; font-weight: 500; box-shadow: 0 6px 18px rgba(0,0,0,0.25); z-index: 100;
 }
 
-/* Cart drawer */
 .cart-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 29; }
 .cart-drawer {
   position: fixed; top: 0; right: 0; height: 100vh; width: 380px; max-width: 92vw;
@@ -225,10 +211,8 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 }
 .shop-address-form label { font-size: 0.78rem; color: var(--s-muted); }
 
-/* Empty cart state */
 .cart-empty { text-align: center; color: var(--s-muted); padding: 40px 10px; font-size: 0.9rem; }
 
-/* My Orders (consumer order history) */
 .order-history-item { padding: 12px 0; border-bottom: 1px solid var(--s-border); }
 .order-history-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 8px; }
 .order-history-name { font-size: 0.88rem; font-weight: 600; }

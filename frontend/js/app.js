@@ -28,7 +28,7 @@ function App() {
       <div className="container">
         <div className="topbar">
           <div>
-            <h1 style={{marginBottom: 0}}>ShardCore</h1>
+            <h1 style={{marginBottom: 0}}>Distribuy</h1>
             <p className="subtitle" style={{marginBottom: 0}}>Admin / System Dashboard</p>
           </div>
           <div style={{display: "flex", alignItems: "center", gap: 14}}>
