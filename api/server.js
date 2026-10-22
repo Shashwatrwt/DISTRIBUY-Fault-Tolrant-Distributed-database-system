@@ -22,8 +22,8 @@ const REPLICA_OF = {
   orders: 'users',
 };
 
-const PG_USER = 'postgres';
-const PG_PASSWORD = 'kvara';
+const PG_USER = '';
+const PG_PASSWORD = '';
 
 const pools = {};
 for (const [domain, cfg] of Object.entries(NODES)) {
