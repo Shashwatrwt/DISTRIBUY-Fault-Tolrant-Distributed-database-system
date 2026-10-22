@@ -225,8 +225,6 @@ Distribuy/
 ├── scripts/
 │   ├── setup_replication.sh  # first-time setup of the logical replication ring
 │   └── reset_catalog.sh      # replaces ALL products with 22 sample items
-├── docs/
-│   └── partitioning.md       # partitioning strategy and trade-offs
 └── .gitignore
 ```
 
@@ -319,7 +317,7 @@ Health returns to all UP and normal routing resumes. `./core/src/coordinator --w
 - **The Coordinator/API is a single point of failure.** The database nodes are fault-tolerant; the process that coordinates them is not. If the API dies between `PREPARE TRANSACTION` and `COMMIT PREPARED`, a prepared transaction can be left in doubt (visible in `pg_prepared_xacts`), and nothing resolves it automatically. A recovery sweep on startup would fix this and is out of scope.
 - **Failover is read-only.** A dead node's data can still be read from its replica, but writes to that domain are refused until its primary returns (replicas are read-only subscribers), so placing an order requires both the Orders and Products primaries. There is no leader election or replica promotion.
 - **Replica schemas are maintained by hand.** Logical replication copies data, not schema changes. If a column is added to a primary table, add it to the replica table with `ALTER TABLE`; re-running `setup_replication.sh` does not fix a mismatch and would tear down healthy replication.
-- **No cross-node referential integrity.** `orders.user_id` and `orders.product_id` are not foreign keys (Postgres cannot enforce them across separate instances; see `docs/partitioning.md`), so deleting a user or product leaves historical orders pointing at an id that no longer exists.
+- **No cross-node referential integrity.** `orders.user_id` and `orders.product_id` are not foreign keys because PostgreSQL cannot enforce foreign-key constraints across separate database instances. As a result, deleting a user or product can leave historical orders pointing to an ID that no longer exists.
 - **Recovery relies on PostgreSQL.** A restarted node replays its own WAL and logical replication catches it up; the Coordinator's heartbeat notices the node answering again and resumes routing to it, but does not itself measure replication lag.
 - **Scope of testing.** Built and verified as a single-machine demo with three PostgreSQL instances; it has not been load-tested or run across multiple machines.
 - **Storefront cosmetics.** The crossed-out "original price" and "12% off" are computed from the real price for display only; there is no discount logic. The cart lives in the browser and is lost on refresh. Payment is Cash on Delivery only.
