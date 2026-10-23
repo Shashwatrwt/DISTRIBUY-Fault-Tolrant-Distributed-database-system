@@ -10,7 +10,7 @@
       e.preventDefault();
       setLoading(true);
       setError(null);
-      apiFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) })
+      apiFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }), timeoutMs: 15000 })
         .then(json => { saveSession(json.token, json.role, json.user); onAuthenticated(json.role); })
         .catch(err => setError(err.message))
         .finally(() => setLoading(false));
@@ -37,7 +37,7 @@
       e.preventDefault();
       setLoading(true);
       setError(null);
-      apiFetch("/auth/signup", { method: "POST", body: JSON.stringify({ name, email, password }) })
+      apiFetch("/auth/signup", { method: "POST", body: JSON.stringify({ name, email, password }), timeoutMs: 15000 })
         .then(json => { saveSession(json.token, json.role, json.user); onAuthenticated(json.role); })
         .catch(err => setError(err.message))
         .finally(() => setLoading(false));
@@ -64,7 +64,7 @@
       e.preventDefault();
       setLoading(true);
       setError(null);
-      apiFetch("/auth/admin-login", { method: "POST", body: JSON.stringify({ username, password }) })
+      apiFetch("/auth/admin-login", { method: "POST", body: JSON.stringify({ username, password }), timeoutMs: 15000 })
         .then(json => { saveSession(json.token, json.role, null); onAuthenticated(json.role); })
         .catch(err => setError(err.message))
         .finally(() => setLoading(false));
