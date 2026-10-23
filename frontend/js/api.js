@@ -25,21 +25,36 @@ function loadSession() {
 }
 
 async function apiFetch(path, options = {}) {
+  const { timeoutMs, ...requestOptions } = options;
   const session = loadSession();
   const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
   if (session && session.token) headers["Authorization"] = "Bearer " + session.token;
 
-  const res = await fetch(API_BASE + path, Object.assign({}, options, { headers }));
-  let json = {};
-  try { json = await res.json(); } catch (e) {}
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(API_BASE + path, Object.assign({}, requestOptions, {
+      headers,
+      ...(controller ? { signal: controller.signal } : {}),
+    }));
+    let json = {};
+    try { json = await res.json(); } catch (e) {}
 
-  if (!res.ok) {
-    const err = new Error(json.error || json.message || ("Request failed with status " + res.status));
-    err.status = res.status;
-    err.data = json;
+    if (!res.ok) {
+      const err = new Error(json.error || json.message || ("Request failed with status " + res.status));
+      err.status = res.status;
+      err.data = json;
+      throw err;
+    }
+    return json;
+  } catch (err) {
+    if (controller && controller.signal.aborted) {
+      throw new Error("The request timed out. Check that the API server is running and try again.");
+    }
     throw err;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  return json;
 }
 function useApi(path, intervalMs) {
   const { useState, useEffect, useCallback } = React;
