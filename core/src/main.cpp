@@ -59,15 +59,6 @@ struct NodeConfig {
     }
 };
 
-const NodeConfig* find_peer(const std::vector<NodeConfig>& peers, int node_id) {
-    for (const NodeConfig& peer : peers) {
-        if (peer.node_id == node_id) {
-            return &peer;
-        }
-    }
-    return nullptr;
-}
-
 bool peers_are_valid(const NodeConfig& local,
                      const std::vector<NodeConfig>& peers) {
     std::unordered_set<int> peer_ids;
