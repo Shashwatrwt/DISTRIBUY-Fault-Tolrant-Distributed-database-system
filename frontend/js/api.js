@@ -42,8 +42,6 @@ async function apiFetch(path, options = {}) {
 
     if (!res.ok) {
       const err = new Error(json.error || json.message || ("Request failed with status " + res.status));
-      err.status = res.status;
-      err.data = json;
       throw err;
     }
     return json;
