@@ -1,76 +1,78 @@
+try { process.loadEnvFile(require('path').join(__dirname, '..', '.env')); } catch { }
+
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { Pool } = require('pg');
 
 const app = express();
-app.use(cors());
+app.use(cors(process.env.CORS_ORIGIN ? { origin: process.env.CORS_ORIGIN.split(',') } : undefined));
 app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
 
-const NODES = {
-  users:    { host: '127.0.0.1', port: 5433, table: 'users' },
-  products: { host: '127.0.0.1', port: 5434, table: 'products' },
-  orders:   { host: '127.0.0.1', port: 5435, table: 'orders' },
-};
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`Missing required environment variable ${name}. Set it in ../.env or your shell.`);
+    process.exit(1);
+  }
+  return value;
+}
+requireEnv('PG_PASSWORD');
 
-const REPLICA_OF = {
-  users: 'products',
-  products: 'orders',
-  orders: 'users',
-};
+const cluster = require('./cluster');
+const txlog = require('./txlog');
+const { isAlive, routedQuery, primaryPool } = cluster;
+cluster.setTickHook(txlog.recover);
 
-const PG_USER = 'postgres';
-const PG_PASSWORD = 'kvara';
-
-const pools = {};
-for (const [domain, cfg] of Object.entries(NODES)) {
-  pools[domain] = new Pool({
-    host: cfg.host, port: cfg.port, user: PG_USER, password: PG_PASSWORD,
-    database: 'postgres', max: 5, connectionTimeoutMillis: 2000,
-  });
-  pools[domain].on('error', () => {});
+function sendError(res, e) {
+  res.status(e.status || 500).json({ error: e.message });
 }
 
-async function isAlive(domain) {
-  try { await pools[domain].query('SELECT 1'); return true; }
-  catch { return false; }
+async function migrate() {
+  const steps = [
+    ['users',  'users',  'password',         'TEXT'],
+    ['orders', 'orders', 'delivery_address', 'TEXT'],
+    ['orders', 'orders', 'payment_method',   "TEXT DEFAULT 'COD'"],
+    ['orders', 'orders', 'unit_price',       'NUMERIC(10,2)'],
+  ];
+  for (const [domain, table, column, ddl] of steps) {
+    for (const node of [cluster.DOMAINS[domain].replica, cluster.DOMAINS[domain].owner]) {
+      try {
+        const t = await cluster.q(node, 'SELECT to_regclass($1) AS t', [table]);
+        if (!t.rows[0].t) continue;
+        const c = await cluster.q(node, 'SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3', ['public', table, column]);
+        if (c.rows.length === 0) await cluster.q(node, `ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      } catch (e) { cluster.logEvent('migration_skipped', { node, table, column, error: e.message }, 'warn'); }
+    }
+  }
 }
 
-async function routedQuery(domain) {
-  const table = NODES[domain].table;
-  if (await isAlive(domain)) {
-    const result = await pools[domain].query(`SELECT * FROM ${table}`);
-    return { source: 'primary', node: domain, rows: result.rows };
-  }
-  const replicaDomain = REPLICA_OF[domain];
-  if (replicaDomain && (await isAlive(replicaDomain))) {
-    const result = await pools[replicaDomain].query(`SELECT * FROM ${table}`);
-    return { source: 'replica', node: replicaDomain, rows: result.rows };
-  }
-  throw new Error(`${domain} is unreachable and no live replica was found`);
-}
-
-(async () => {
-  try {
-    await pools.users.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;');
-    await pools.orders.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;");
-    await pools.orders.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'COD';");
-  } catch (e) {
-    console.error('Migration error:', e.message);
-  }
-})();
-
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD_HASH = bcrypt.hashSync('admin123', 10);
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD_HASH = bcrypt.hashSync(requireEnv('ADMIN_PASSWORD'), 10);
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const sessions = new Map();
 
 function issueToken(session) {
   const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, session);
+  sessions.set(token, { ...session, expiresAt: Date.now() + SESSION_TTL_MS });
   return token;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, s] of sessions) if (s.expiresAt <= now) sessions.delete(token);
+}, 10 * 60 * 1000).unref();
+
+const attempts = new Map();
+function loginLimiter(req, res, next) {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const recent = (attempts.get(req.ip) || []).filter(t => now - t < windowMs);
+  if (recent.length >= 10) return res.status(429).json({ error: 'Too many attempts, try again later' });
+  recent.push(now);
+  attempts.set(req.ip, recent);
+  next();
 }
 function getToken(req) {
   const header = req.headers.authorization || '';
@@ -80,7 +82,8 @@ function getToken(req) {
 function requireAuth(req, res, next) {
   const token = getToken(req);
   const session = token && sessions.get(token);
-  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  if (session && session.expiresAt <= Date.now()) sessions.delete(token);
+  if (!session || session.expiresAt <= Date.now()) return res.status(401).json({ error: 'Not authenticated' });
   req.session = session;
   next();
 }
@@ -91,12 +94,12 @@ function requireAdmin(req, res, next) {
   });
 }
 
-app.post('/auth/signup', async (req, res) => {
+app.post('/auth/signup', loginLimiter, async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'name, email and password are required' });
   try {
     const hash = await bcrypt.hash(password, 10);
-    const result = await pools.users.query(
+    const result = await primaryPool('users').query(
       'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email',
       [name, email, hash]
     );
@@ -105,25 +108,25 @@ app.post('/auth/signup', async (req, res) => {
     res.status(201).json({ token, role: 'consumer', user });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists' });
-    res.status(500).json({ error: e.message });
+    sendError(res, e);
   }
 });
 
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
   try {
-    const result = await pools.users.query('SELECT id, name, email, password FROM users WHERE email = $1', [email]);
+    const result = await primaryPool('users').query('SELECT id, name, email, password FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
     if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     const token = issueToken({ role: 'consumer', userId: user.id });
     res.json({ token, role: 'consumer', user: { id: user.id, name: user.name, email: user.email } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
-app.post('/auth/admin-login', async (req, res) => {
+app.post('/auth/admin-login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (username !== ADMIN_USERNAME || !bcrypt.compareSync(password || '', ADMIN_PASSWORD_HASH)) {
     return res.status(401).json({ error: 'Invalid admin credentials' });
@@ -135,18 +138,37 @@ app.post('/auth/admin-login', async (req, res) => {
 app.get('/auth/me', requireAuth, (req, res) => res.json({ role: req.session.role, userId: req.session.userId }));
 app.post('/auth/logout', requireAuth, (req, res) => { sessions.delete(getToken(req)); res.json({ ok: true }); });
 
-
 app.get('/health', async (req, res) => {
   const status = {};
   let aliveCount = 0;
-  for (const domain of Object.keys(NODES)) {
-    const alive = await isAlive(domain);
-    status[domain] = alive ? 'UP' : 'DOWN';
+  for (const node of cluster.NODE_KEYS) {
+    const alive = await isAlive(node);
+    status[node] = alive ? 'UP' : 'DOWN';
     if (alive) aliveCount++;
   }
-  const total = Object.keys(NODES).length;
+  const total = cluster.NODE_KEYS.length;
   const quorum = Math.floor(total / 2) + 1;
-  res.json({ nodes: status, reachable: `${aliveCount}/${total}`, quorum, cluster_available: aliveCount >= quorum });
+  const cs = cluster.status();
+  const roles = {};
+  for (const [node, n] of Object.entries(cs.nodes)) {
+    roles[node] = { primary_of: n.primary_of, replica_of: n.replica_of, out_of_service_for: n.out_of_service_for };
+  }
+  res.json({ ready: cs.roles_verified, nodes: status, roles, reachable: `${aliveCount}/${total}`, quorum, cluster_available: aliveCount >= quorum });
+});
+
+app.get('/cluster/status', requireAdmin, async (req, res) => {
+  try { res.json({ ...cluster.status(), ...(await txlog.inDoubtReport()) }); }
+  catch (e) { sendError(res, e); }
+});
+app.post('/cluster/switchover/:domain', requireAdmin, async (req, res) => {
+  if (!cluster.DOMAIN_KEYS.includes(req.params.domain)) return res.status(404).json({ error: 'unknown domain' });
+  try { res.json(await cluster.switchover(req.params.domain)); }
+  catch (e) { res.status(409).json({ error: e.message }); }
+});
+app.post('/cluster/resync/:domain', requireAdmin, async (req, res) => {
+  if (!cluster.DOMAIN_KEYS.includes(req.params.domain)) return res.status(404).json({ error: 'unknown domain' });
+  try { res.json(await cluster.retryResync(req.params.domain)); }
+  catch (e) { res.status(409).json({ error: e.message }); }
 });
 
 app.get('/users', requireAdmin, async (req, res) => {
@@ -161,11 +183,11 @@ app.post('/users', requireAdmin, async (req, res) => {
   const { name, email } = req.body;
   if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
   try {
-    const result = await pools.users.query('INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id, name, email', [name, email]);
+    const result = await primaryPool('users').query('INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id, name, email', [name, email]);
     res.status(201).json(result.rows[0]);
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists' });
-    res.status(500).json({ error: e.message });
+    sendError(res, e);
   }
 });
 
@@ -178,9 +200,9 @@ app.post('/products', requireAdmin, async (req, res) => {
   const { name, price, stock } = req.body;
   if (!name || price === undefined) return res.status(400).json({ error: 'name and price are required' });
   try {
-    const result = await pools.products.query('INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *', [name, price, stock ?? 0]);
+    const result = await primaryPool('products').query('INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *', [name, price, stock ?? 0]);
     res.status(201).json(result.rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.put('/products/:id', requireAdmin, async (req, res) => {
@@ -190,32 +212,30 @@ app.put('/products/:id', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'name, price and stock are all required for an update' });
   }
   try {
-    const result = await pools.products.query(
+    const result = await primaryPool('products').query(
       'UPDATE products SET name = $1, price = $2, stock = $3 WHERE id = $4 RETURNING *',
       [name, price, stock, id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json(result.rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.delete('/products/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
-    const result = await pools.products.query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
+    const result = await primaryPool('products').query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json({ ok: true, deletedId: result.rows[0].id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.get('/orders', requireAuth, async (req, res) => {
   try {
-    const result = await routedQuery('orders');
-    if (req.session.role === 'admin') {
-      return res.json(result);
-    }
-    const ownOrders = result.rows.filter(o => o.user_id === req.session.userId);
-    res.json({ source: result.source, node: result.node, rows: ownOrders });
+    const result = req.session.role === 'admin'
+      ? await routedQuery('orders')
+      : await routedQuery('orders', { where: 'user_id = $1', params: [req.session.userId] });
+    res.json(result);
   } catch (e) { res.status(503).json({ error: e.message }); }
 });
 
@@ -223,60 +243,14 @@ app.post('/orders', requireAuth, async (req, res) => {
   const { product_id, quantity, delivery_address } = req.body;
   const user_id = req.session.role === 'admin' && req.body.user_id ? req.body.user_id : req.session.userId;
 
-  if (!user_id || !product_id || !quantity) {
-    return res.status(400).json({ error: 'product_id and quantity are required' });
+  if (![user_id, product_id, quantity].every(Number.isInteger) || user_id < 1 || product_id < 1 || quantity < 1) {
+    return res.status(400).json({ error: 'user_id, product_id and quantity must be positive integers' });
   }
-
   if (req.session.role !== 'admin' && !delivery_address) {
     return res.status(400).json({ error: 'delivery_address is required' });
   }
-  if (!(await isAlive('orders')) || !(await isAlive('products'))) {
-    return res.status(503).json({ error: '2PC requires both the Orders and Products primary nodes to be reachable' });
-  }
-
-  const ordersClient = await pools.orders.connect();
-  const productsClient = await pools.products.connect();
-  const txnId = `order_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
-  const txnOrders = `${txnId}_orders`;
-  const txnProducts = `${txnId}_products`;
-  let ordersPrepared = false;
-  let productsPrepared = false;
-
-  try {
-    try {
-      await ordersClient.query('BEGIN');
-      await ordersClient.query(
-        'INSERT INTO orders (user_id, product_id, quantity, status, delivery_address, payment_method) VALUES ($1, $2, $3, $4, $5, $6)',
-        [user_id, product_id, quantity, 'pending', delivery_address || null, 'COD']
-      );
-      await ordersClient.query(`PREPARE TRANSACTION '${txnOrders}'`);
-      ordersPrepared = true;
-    } catch (e) { console.error('Orders PREPARE failed:', e.message); }
-
-    try {
-      await productsClient.query('BEGIN');
-      const stockResult = await productsClient.query('SELECT stock FROM products WHERE id = $1 FOR UPDATE', [product_id]);
-      if (stockResult.rows.length === 0) throw new Error('product not found');
-      const stock = stockResult.rows[0].stock;
-      if (stock < quantity) throw new Error(`insufficient stock (have ${stock}, need ${quantity})`);
-      await productsClient.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [quantity, product_id]);
-      await productsClient.query(`PREPARE TRANSACTION '${txnProducts}'`);
-      productsPrepared = true;
-    } catch (e) { console.error('Products PREPARE failed:', e.message); }
-
-    if (ordersPrepared && productsPrepared) {
-      await ordersClient.query(`COMMIT PREPARED '${txnOrders}'`);
-      await productsClient.query(`COMMIT PREPARED '${txnProducts}'`);
-      res.status(201).json({ status: 'committed', message: 'Order placed successfully (Cash on Delivery)' });
-    } else {
-      if (ordersPrepared) await ordersClient.query(`ROLLBACK PREPARED '${txnOrders}'`);
-      if (productsPrepared) await productsClient.query(`ROLLBACK PREPARED '${txnProducts}'`);
-      res.status(409).json({ status: 'aborted', message: 'Order could not be placed - no partial changes were made' });
-    }
-  } finally {
-    ordersClient.release();
-    productsClient.release();
-  }
+  const { http, body } = await txlog.placeOrder({ user_id, product_id, quantity, delivery_address });
+  res.status(http).json(body);
 });
 
 const VALID_ORDER_STATUSES = ['pending', 'shipped', 'delivered', 'cancelled'];
@@ -288,22 +262,21 @@ app.patch('/orders/:id', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: `status must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
   }
   try {
-    const result = await pools.orders.query('UPDATE orders SET status = $1 WHERE id = $2 RETURNING *', [status, id]);
+    const result = await primaryPool('orders').query('UPDATE orders SET status = $1 WHERE id = $2 RETURNING *', [status, id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Order not found' });
     res.json(result.rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.delete('/users/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
-    const result = await pools.users.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+    const result = await primaryPool('users').query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
     res.json({ ok: true, deletedId: result.rows[0].id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
-
 
 app.get('/admin/stats', requireAdmin, async (req, res) => {
   try {
@@ -319,7 +292,7 @@ app.get('/admin/stats', requireAdmin, async (req, res) => {
     let totalOrderValue = 0;
     const statusCounts = { pending: 0, shipped: 0, delivered: 0, cancelled: 0 };
     for (const o of ordersResult.rows) {
-      const price = priceByProductId[o.product_id] || 0;
+      const price = o.unit_price != null ? Number(o.unit_price) : (priceByProductId[o.product_id] || 0);
       totalOrderValue += price * o.quantity;
       if (statusCounts[o.status] !== undefined) statusCounts[o.status]++;
     }
@@ -341,4 +314,19 @@ app.get('/admin/stats', requireAdmin, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Distribuy API listening on http://localhost:${PORT}`));
+app.listen(PORT, (err) => {
+  if (err) {
+    console.error(`Cannot listen on port ${PORT}: ${err.message}. Is another API instance already running?`);
+    process.exit(1);
+  }
+  console.log(`Distribuy API listening on http://localhost:${PORT}`);
+});
+(async () => {
+  try {
+    await cluster.start();
+    await migrate();
+    setTimeout(() => txlog.recover(), 1000).unref();
+  } catch (e) {
+    cluster.logEvent('startup_error', { error: e.message }, 'error');
+  }
+})();
