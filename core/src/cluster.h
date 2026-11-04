@@ -1,6 +1,9 @@
 #ifndef DISTRIBUY_CLUSTER_H
 #define DISTRIBUY_CLUSTER_H
 
+#include <cstdlib>
+#include <unistd.h>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -30,6 +33,13 @@ inline std::string table_for_domain(NodeDomain domain) {
     return "unknown";
 }
 
+inline bool domain_from_name(const std::string& name, NodeDomain& out) {
+    if (name == "users") { out = NodeDomain::Users; return true; }
+    if (name == "products") { out = NodeDomain::Products; return true; }
+    if (name == "orders") { out = NodeDomain::Orders; return true; }
+    return false;
+}
+
 struct NodeConfig {
     int node_id;
     std::string host;
@@ -43,15 +53,6 @@ struct NodeConfig {
 
 struct ClusterMetadata {
     std::vector<NodeConfig> nodes;
-
-    const NodeConfig* find_by_id(int node_id) const {
-        for (const auto& candidate : nodes) {
-            if (candidate.node_id == node_id) {
-                return &candidate;
-            }
-        }
-        return nullptr;
-    }
 };
 
 inline ClusterMetadata build_cluster_metadata() {
@@ -69,7 +70,18 @@ inline std::unordered_map<NodeDomain, NodeDomain> build_replica_map() {
     };
 }
 
-inline const char* PG_USER = "postgres";
-inline const char* PG_PASSWORD = "kvara";
+inline std::string pg_user() {
+    const char* v = std::getenv("PG_USER");
+    return v ? v : "postgres";
+}
+inline std::string pg_password() {
+    const char* v = std::getenv("PG_PASSWORD");
+    if (!v || !*v) {
+        std::cerr << "PG_PASSWORD is not set. Export it before running.\n";
+        std::cerr.flush();
+        _exit(1);
+    }
+    return v;
+}
 
 #endif
