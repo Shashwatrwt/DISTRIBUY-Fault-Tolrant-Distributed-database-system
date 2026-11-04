@@ -7,6 +7,21 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <pqxx/pqxx>
+
+std::string pg_user_env() {
+    const char* v = std::getenv("PG_USER");
+    return v ? v : "postgres";
+}
+std::string pg_password_env() {
+    const char* v = std::getenv("PG_PASSWORD");
+    if (!v || !*v) {
+        std::cerr << "PG_PASSWORD is not set. Export it before running.\n";
+        std::cerr.flush();
+        _exit(1);
+    }
+    return v;
+}
+
 enum class NodeState { Starting, Ready };
 enum class NodeDomain { Users, Products, Orders };
 enum class TxState { Begin, Commit, Abort };
@@ -324,7 +339,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\nConnecting to PostgreSQL at " << node.config.endpoint() << " ...\n";
     try {
-        PgStore store(node.config.host, node.config.port, "postgres", "kvara");
+        PgStore store(node.config.host, node.config.port, pg_user_env(), pg_password_env());
         if (store.is_open()) {
             std::cout << "PostgreSQL connection: SUCCESS\n";
 
