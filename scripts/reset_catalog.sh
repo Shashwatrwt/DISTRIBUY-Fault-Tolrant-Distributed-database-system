@@ -1,3 +1,5 @@
+#!/bin/bash
+set -euo pipefail
 sudo -u postgres psql -p 5434 -c "TRUNCATE TABLE products RESTART IDENTITY;"
 sudo -u postgres psql -p 5434 -c "INSERT INTO products (name, price, stock) VALUES
   ('Wireless Mouse', 799.00, 15),

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-PG_USER=""
-PG_PASSWORD=""
+PG_USER="${PG_USER:-postgres}"
+: "${PG_PASSWORD:?Set PG_PASSWORD before running this script}"
 
 echo "=== Checking wal_level on all 3 nodes ==="
 for node_port in 5433:node1 5434:node2 5435:node3; do

@@ -59,19 +59,6 @@ button.secondary { background: transparent; border: 1px solid var(--panel-border
 .full-width { grid-column: 1 / -1; }
 .refresh-note { font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
 
-.shop-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
-.product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-.product-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; }
-.product-card .emoji { font-size: 2rem; margin-bottom: 8px; }
-.product-card h3 { margin: 0 0 4px; font-size: 1rem; }
-.product-card .price { font-size: 1.2rem; font-weight: 700; color: #a5b4fc; margin: 4px 0; }
-.product-card .stock { font-size: 0.8rem; color: var(--muted); margin-bottom: 10px; }
-.product-card .stock.low { color: #f59e0b; }
-.product-card .stock.out { color: var(--down); }
-.qty-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.qty-row input { width: 60px; text-align: center; }
-.cart-toast { position: fixed; bottom: 20px; right: 20px; background: var(--up); color: #063016; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
-
 .login-shell { display: flex; align-items: center; justify-content: center; min-height: 90vh; padding: 20px; }
 .login-box { width: 100%; max-width: 480px; padding: 40px 36px; }
 .login-box h1 { font-size: 1.8rem; }

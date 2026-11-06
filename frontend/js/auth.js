@@ -76,7 +76,6 @@
         <input placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
         <button type="submit" disabled={loading}>{loading ? "Logging in..." : "Log In as Admin"}</button>
         {error && <div className="result-msg error">{error}</div>}
-        <p className="refresh-note">Demo credentials: admin / admin123</p>
       </form>
     );
   }

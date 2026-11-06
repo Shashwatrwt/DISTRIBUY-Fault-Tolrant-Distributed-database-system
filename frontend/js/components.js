@@ -40,7 +40,6 @@ function emojiFor(name) {
 }
 function fakeMrp(price) { return (Number(price) * 1.12).toFixed(2); }
 
-
 function Stepper({ value, min, max, onChange }) {
   return (
     <div className="stepper">
@@ -325,7 +324,17 @@ function ClusterHealth() {
       <h2>🩺 Cluster Health <span style={{fontSize: "0.75rem", color: "var(--muted)", fontWeight: 400}}>(auto-refreshing every 3s)</span></h2>
       {Object.entries(data.nodes).map(([domain, status]) => (
         <div className="node-row" key={domain}>
-          <span style={{textTransform: "capitalize"}}>{domain} node</span>
+          <span style={{textTransform: "capitalize"}}>
+            {domain} node
+            {data.roles && data.roles[domain] && (
+              <span style={{fontSize: "0.75rem", color: "var(--muted)", marginLeft: 8}}>
+                {data.roles[domain].primary_of.length > 0 && "primary: " + data.roles[domain].primary_of.join(", ")}
+                {data.roles[domain].primary_of.length > 0 && data.roles[domain].replica_of.length > 0 && " · "}
+                {data.roles[domain].replica_of.length > 0 && "replica: " + data.roles[domain].replica_of.join(", ")}
+                {data.roles[domain].out_of_service_for.length > 0 && " · out of service (resyncing): " + data.roles[domain].out_of_service_for.join(", ")}
+              </span>
+            )}
+          </span>
           <span className={"badge " + (status === "UP" ? "up" : "down")}>{status}</span>
         </div>
       ))}
@@ -337,28 +346,7 @@ function ClusterHealth() {
   );
 }
 
-function DataTable({ title, icon, path, columns }) {
-  const { data, error, refetch } = useApi(path, null);
-  return (
-    <div className="panel">
-      <h2>{icon} {title}</h2>
-      {error && <div className="result-msg error">{error}</div>}
-      {data && (
-        <>
-          {data.source && <div style={{marginBottom: 8}}><span className={"source-tag " + data.source}>served from {data.source} ({data.node})</span></div>}
-          <table>
-            <thead><tr>{columns.map(c => <th key={c.key}>{c.label}</th>)}</tr></thead>
-            <tbody>{data.rows && data.rows.map(row => <tr key={row.id}>{columns.map(c => <td key={c.key}>{String(row[c.key] ?? "")}</td>)}</tr>)}</tbody>
-          </table>
-          {(!data.rows || data.rows.length === 0) && <p style={{color: "var(--muted)", fontSize: "0.85rem"}}>No rows yet.</p>}
-        </>
-      )}
-      <button style={{marginTop: 10}} onClick={refetch}>Refresh</button>
-    </div>
-  );
-}
-
-function ProductManager({ refreshKey, bump }) {
+function ProductManager({ bump }) {
   const { data, refetch } = useApi("/products", null);
   const [editingId, setEditingId] = useState2(null);
   const [editName, setEditName] = useState2("");
@@ -477,7 +465,7 @@ function StatCard({ label, value, tone }) {
   );
 }
 
-function StatsPanel({ refreshKey }) {
+function StatsPanel() {
   const { data, error } = useApi("/admin/stats", 10000);
   if (error) return <div className="panel full-width"><div className="result-msg error">Could not load stats: {error}</div></div>;
   if (!data) return <div className="panel full-width"><p style={{color: "var(--muted)"}}>Loading stats...</p></div>;
@@ -613,14 +601,14 @@ function AdminView() {
 
       {adminTab === "overview" && (
         <div>
-          <div className="grid"><StatsPanel key={"stats-" + refreshKey} refreshKey={refreshKey} /></div>
+          <div className="grid"><StatsPanel key={"stats-" + refreshKey} /></div>
           <div className="grid"><ClusterHealth key={"health-" + refreshKey} /></div>
         </div>
       )}
 
       {adminTab === "products" && (
         <div>
-          <div className="grid"><ProductManager key={"pm-" + refreshKey} refreshKey={refreshKey} bump={bump} /></div>
+          <div className="grid"><ProductManager key={"pm-" + refreshKey} bump={bump} /></div>
           <div className="grid"><AddProductForm onAdded={bump} /></div>
         </div>
       )}
