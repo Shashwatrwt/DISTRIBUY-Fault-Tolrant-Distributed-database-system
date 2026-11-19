@@ -30,6 +30,18 @@ function sendError(res, e) {
   res.status(e.status || 500).json({ error: e.message });
 }
 
+// Route ids must be positive 32-bit integers (matches SERIAL); anything else is a client error, not a 500.
+function parseId(value) {
+  return /^\d{1,10}$/.test(value) && Number(value) >= 1 && Number(value) <= 2147483647 ? Number(value) : null;
+}
+function validProductFields({ name, price, stock }, stockRequired) {
+  if (typeof name !== 'string' || !name.trim()) return 'name must be a non-empty string';
+  if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || price >= 1e8) return 'price must be a number between 0 and 99999999.99';
+  if (stock === undefined && !stockRequired) return null;
+  if (!Number.isInteger(stock) || stock < 0) return 'stock must be a non-negative integer';
+  return null;
+}
+
 async function migrate() {
   const steps = [
     ['users',  'users',  'password',         'TEXT'],
@@ -62,16 +74,24 @@ function issueToken(session) {
 setInterval(() => {
   const now = Date.now();
   for (const [token, s] of sessions) if (s.expiresAt <= now) sessions.delete(token);
+  for (const [ip, list] of attempts) if (!list.some(t => now - t < LOGIN_WINDOW_MS)) attempts.delete(ip);
 }, 10 * 60 * 1000).unref();
 
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const attempts = new Map();
 function loginLimiter(req, res, next) {
   const now = Date.now();
-  const windowMs = 15 * 60 * 1000;
-  const recent = (attempts.get(req.ip) || []).filter(t => now - t < windowMs);
+  const recent = (attempts.get(req.ip) || []).filter(t => now - t < LOGIN_WINDOW_MS);
   if (recent.length >= 10) return res.status(429).json({ error: 'Too many attempts, try again later' });
   recent.push(now);
   attempts.set(req.ip, recent);
+  // Only failed attempts count towards the limit: refund the slot on a successful response.
+  res.on('finish', () => {
+    if (res.statusCode < 400) {
+      const list = attempts.get(req.ip);
+      if (list) list.splice(list.lastIndexOf(now), 1);
+    }
+  });
   next();
 }
 function getToken(req) {
@@ -180,10 +200,11 @@ app.get('/users', requireAdmin, async (req, res) => {
 });
 
 app.post('/users', requireAdmin, async (req, res) => {
-  const { name, email } = req.body;
-  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ error: 'name, email and password are required' });
   try {
-    const result = await primaryPool('users').query('INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id, name, email', [name, email]);
+    const hash = await bcrypt.hash(password, 10);
+    const result = await primaryPool('users').query('INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email', [name, email, hash]);
     res.status(201).json(result.rows[0]);
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'An account with that email already exists' });
@@ -199,6 +220,8 @@ app.get('/products', async (req, res) => {
 app.post('/products', requireAdmin, async (req, res) => {
   const { name, price, stock } = req.body;
   if (!name || price === undefined) return res.status(400).json({ error: 'name and price are required' });
+  const invalid = validProductFields({ name, price, stock }, false);
+  if (invalid) return res.status(400).json({ error: invalid });
   try {
     const result = await primaryPool('products').query('INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *', [name, price, stock ?? 0]);
     res.status(201).json(result.rows[0]);
@@ -206,11 +229,14 @@ app.post('/products', requireAdmin, async (req, res) => {
 });
 
 app.put('/products/:id', requireAdmin, async (req, res) => {
-  const { id } = req.params;
+  const id = parseId(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid product id' });
   const { name, price, stock } = req.body;
   if (!name || price === undefined || stock === undefined) {
     return res.status(400).json({ error: 'name, price and stock are all required for an update' });
   }
+  const invalid = validProductFields({ name, price, stock }, true);
+  if (invalid) return res.status(400).json({ error: invalid });
   try {
     const result = await primaryPool('products').query(
       'UPDATE products SET name = $1, price = $2, stock = $3 WHERE id = $4 RETURNING *',
@@ -222,7 +248,8 @@ app.put('/products/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/products/:id', requireAdmin, async (req, res) => {
-  const { id } = req.params;
+  const id = parseId(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid product id' });
   try {
     const result = await primaryPool('products').query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
@@ -256,7 +283,8 @@ app.post('/orders', requireAuth, async (req, res) => {
 const VALID_ORDER_STATUSES = ['pending', 'shipped', 'delivered', 'cancelled'];
 
 app.patch('/orders/:id', requireAdmin, async (req, res) => {
-  const { id } = req.params;
+  const id = parseId(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid order id' });
   const { status } = req.body;
   if (!VALID_ORDER_STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${VALID_ORDER_STATUSES.join(', ')}` });
@@ -269,7 +297,8 @@ app.patch('/orders/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/users/:id', requireAdmin, async (req, res) => {
-  const { id } = req.params;
+  const id = parseId(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'invalid user id' });
   try {
     const result = await primaryPool('users').query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
