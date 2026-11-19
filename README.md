@@ -72,11 +72,11 @@ The prototype models these nodes with localhost endpoints on ports 5433, 5434, a
 
 ### Partitioning
 
-Instead of one giant table spanning one machine, each table lives on one node. This spreads storage and request load, and a problemin one domain does not bring down the entire system.
+Instead of one giant table spanning one machine, each table lives on one node. This spreads storage and request load, and a problem in one domain does not bring down the entire system.
 
 ### Replication
 
-Partitioning alone is risky. If one node fails, data becomes unreachable. PostgreSQL logical replication copies each node's data toanother node in a ring:
+Partitioning alone is risky. If one node fails, data becomes unreachable. PostgreSQL logical replication copies each node's data to another node in a ring:
 
 ```text
 Node 1 (Users) → replicated to → Node 2
@@ -141,7 +141,7 @@ This prevents half-finished updates.
 
 ## Failure detection, failover, and recovery
 
-- **Detection:** the API's monitor probes every node each second (configurable) and declares a node down after 3 consecutive misses. The C++ Coordinator's heartbeat (`--watch`) observes the same nodes.
+- **Detection:** the API's monitor probes every node every 2 seconds by default (`HEALTH_INTERVAL_MS`) and declares a node down after 3 consecutive misses. The C++ Coordinator's heartbeat (`--watch`) observes the same nodes.
 - **Automatic promotion:** if a primary is down and its replica is eligible, the replica is promoted and routing switches to it, for reads *and* writes.
 - **Fencing / split-brain prevention:** every role change is recorded with a higher *epoch* on a majority (2 of 3) of nodes, and a write-guard trigger on every table rejects writes on any node that is not the primary for that data.
 - **Recovery:** a returning old primary is fenced, never auto-promoted, its data is archived and overwritten from the current primary, verified, and it rejoins as a replica.
@@ -229,7 +229,8 @@ Distribuy/
 ├── scripts/
 │   ├── setup_replication.sh  # first-time setup of the logical replication ring
 │   ├── reset_catalog.sh      # replaces ALL products with 22 sample items
-│   └── tests/                # failure-scenario tests (2PC recovery, failover, split-brain, consistency)
+│   └── divergence_report.sh  # read-only report on rows left in *_divergent_* archives
+├── .env.example              # template for the required environment variables
 └── .gitignore
 ```
 
@@ -258,7 +259,7 @@ CREATE TABLE orders (id SERIAL PRIMARY KEY, user_id INT NOT NULL, product_id INT
                      payment_method TEXT DEFAULT 'COD');
 ```
 
-- The replication ring: run `scripts/setup_replication.sh` once, for first-time setup only. It drops and recreates every publication and subscription, so do not re-run it on a cluster whose replication is already healthy (the script's header explains this).
+- The replication ring: run `scripts/setup_replication.sh` once, for first-time setup only. It drops and recreates every publication and subscription, so do not re-run it on a cluster whose replication is already healthy (the script's header explains this, and it asks for confirmation unless run with `--yes`).
 
 ### Run
 
@@ -285,6 +286,10 @@ cd frontend && python3 -m http.server 8080
 After changing a frontend file, hard-refresh the browser (Ctrl+Shift+R), otherwise it may keep showing the cached old version.
 
 **4. Sample catalog** (optional): `./scripts/reset_catalog.sh` replaces all products with 22 sample items. It truncates the `products` table first.
+
+**Configuration:** copy `.env.example` to `.env` and set real values before starting the API.
+
+**Per-node process** (`core/src/main.cpp`, optional): `g++ -Wall -Wextra core/src/main.cpp -o core/src/main -lpqxx -lpq`. It needs `PG_PASSWORD` in the shell (`set -a; source .env; set +a`).
 
 **Accounts:** the admin login uses `ADMIN_USERNAME` / `ADMIN_PASSWORD` from your `.env`. Consumers create their own account with **Sign Up**. Start the API with `cd api && npm start` (reads `../.env`).
 
@@ -386,21 +391,14 @@ sudo pg_ctlcluster 18 node2 start    # old primary returns
 ```
 It is fenced, resynced and shown as a replica; direct writes to it are rejected. To move Products back to node2: `POST /cluster/switchover/products` (admin token).
 
-### Automated tests (`scripts/tests/`)
-```bash
-./scripts/tests/test_api_smoke.sh        # auth, authorization, validation, order flow, rate limiting      (57 checks)
-./scripts/tests/test_2pc_recovery.sh     # Node API: coordinator crash at 4 protocol points + participant failure (41)
-./scripts/tests/test_cpp_coordinator.sh  # C++ coordinator: commit, abort, 4 crash points, recovery grace period   (38)
-./scripts/tests/test_failover.sh         # Tests 5, 1, 2, 6, 7 and a planned switchover                            (63)
-./scripts/tests/measure_failover.sh      # failover timing under continuous traffic, latency, lost-write check
-./scripts/divergence_report.sh           # read-only: rows that exist ONLY in a *_divergent_* archive (replay candidates)
-NODE_CTL=pg_ctlcluster ./scripts/tests/test_failover.sh   # same failover suite with REAL node stop/start (prints the sudo commands)
-```
-Each script creates throwaway data and removes it (`KEEP=1` keeps it), starts its own API on its own port (4011-4014), and is role-aware where it matters. Stop other API instances first: a second instance on port 4000 now exits instead of running a competing failover monitor.
+### Verification
+There is no automated test suite in this repository. Failover, fencing and 2PC recovery were exercised manually (see **Demonstrating it** above, and the C++ crash points `DISTRIBUY_ALLOW_FAULTS=1 DISTRIBUY_FAULT=<point>` supported by both the API and the Coordinator: `after_prepare`, `after_prepared_record`, `after_decision`, `after_first_commit`).
 
-**Measured** (simulated outage, monitor interval 1 s x 3 misses): promotion about 2.5 s after the failure; clients saw about 2.4 s of write unavailability and no read failures (reads fall back to the replica copy); no acknowledged write lost; cross-node 2PC order latency p50 6 ms / p95 9 ms on a local machine. With the default 2 s interval expect roughly 6 s. A hung (not refused) connection takes longer to detect because of the 8 s query timeout.
+`./scripts/divergence_report.sh` is read-only and lists rows that exist only in a `*_divergent_*` archive (replay candidates).
 
-**Real stop/start:** one real `pg_ctlcluster` stop/start of node2 was exercised by hand during development (failure detected, node3 promoted, an order placed through the storefront during the outage succeeded, node2 fenced and resynced). The full automated suite has only been run in simulated mode.
+With the default 2 s monitor interval and 3 misses, expect a promotion roughly 6 s after a failure. A hung (not refused) connection takes longer to detect because of the 8 s query timeout. No timing or latency figures have been recorded in this repository, so none are claimed here.
+
+**Real stop/start:** a `pg_ctlcluster` stop/start of node2 was exercised by hand during development (failure detected, node3 promoted, an order placed through the storefront during the outage succeeded, node2 fenced and resynced). It has not been repeated under a scripted, repeatable test.
 
 ## Development roadmap
 
@@ -421,11 +419,13 @@ Each script creates throwaway data and removes it (`KEEP=1` keeps it), starts it
 - **Replication is asynchronous, so failover can lose data.** A write acknowledged by the old primary but not yet replicated when it died is not on the promoted replica. Promotion is gated on recorded lag, and such rows survive in the `*_divergent_*` archive on the returned node, but they are not merged back automatically. Synchronous replication would remove this at the cost of availability when a replica is down; it is not implemented.
 - **Pre-fencing window.** A returning old primary still believes it is primary until the monitor (about one tick) overwrites its role row. A client writing *directly* to it in that window is accepted (observed in the tests); the data is archived at resync, never silently lost. All application writes go through the API, which routes by role, so they are unaffected.
 - **No replica while degraded.** After a failover the promoted node has no replica until the old primary is resynced; a second failure in that window loses that data. Node3 also carries two primaries (Orders + Products) until you switch back.
-- **Tested outage mode.** The automated failover suite simulated outages with `ALLOW_CONNECTIONS false` plus session termination (the process kept running, so PostgreSQL's own crash recovery was not exercised). The same suite runs against real stop/start with `NODE_CTL=pg_ctlcluster`; that full run is still to be done.
+- **Tested outage mode.** Failover has been exercised by hand, with a real `pg_ctlcluster` stop/start of one node. There is no repeatable automated suite, and PostgreSQL crash recovery under a hard kill was not tested.
 - **Not covered:** simultaneous failure of two nodes (no majority, so by design nothing is promoted), partitions where the API reaches only some nodes, and multiple API instances. A simultaneous outage of the primary and its replica is covered (nothing is promoted, the problem is reported), but a three-way network partition is not.
 - **Replica schemas are maintained by hand.** Logical replication copies data, not schema changes. If a column is added to a primary table, add it to the replica table with `ALTER TABLE`; re-running `setup_replication.sh` does not fix a mismatch and would tear down healthy replication.
 - **No cross-node referential integrity.** `orders.user_id` and `orders.product_id` are not foreign keys because PostgreSQL cannot enforce foreign-key constraints across separate database instances. As a result, deleting a user or product can leave historical orders pointing to an ID that no longer exists.
 - **Scope of testing.** Built and verified as a single-machine demo with three PostgreSQL instances; it has not been load-tested or run across multiple machines.
+- **Checkout is not atomic across cart items.** Each cart line is placed as its own distributed transaction, so a cart can end up partly ordered. Each order is all-or-nothing across Orders and Products; the cart as a whole is not.
+- **Cart prices are display-only.** The cart shows the price loaded with the product list; the server records the price at the moment the order is placed (`orders.unit_price`), which can differ if an admin changes the price in between.
 - **Storefront cosmetics.** The crossed-out "original price" and "12% off" are computed from the real price for display only; there is no discount logic. The cart lives in the browser and is lost on refresh. Payment is Cash on Delivery only.
 
 ## License

@@ -107,9 +107,9 @@ function CartDrawer({ cart, onClose, onRemove, onCheckoutDone }) {
           method: "POST",
           body: JSON.stringify({ product_id: item.id, quantity: item.quantity, delivery_address: fullAddress }),
         });
-        outcomes.push({ name: item.name, ok: true, message: "Confirmed" });
+        outcomes.push({ id: item.id, name: item.name, ok: true, message: "Confirmed" });
       } catch (err) {
-        outcomes.push({ name: item.name, ok: false, message: err.message });
+        outcomes.push({ id: item.id, name: item.name, ok: false, message: err.message });
       }
     }
     setResults(outcomes);
@@ -270,7 +270,8 @@ function ShopView({ userName, onLogout }) {
   const removeFromCart = (productId) => setCart(prev => prev.filter(i => i.id !== productId));
 
   const handleCheckoutDone = (outcomes) => {
-    setCart(prev => prev.filter((item, idx) => !(outcomes[idx] && outcomes[idx].ok)));
+    const confirmedIds = new Set(outcomes.filter(o => o.ok).map(o => o.id));
+    setCart(prev => prev.filter(item => !confirmedIds.has(item.id)));
     refetchProducts();
   };
 

@@ -1,7 +1,24 @@
 #!/bin/bash
+# First-time setup of the 3-node logical replication ring. NOT idempotent.
+#
+# WARNING: this DROPS and recreates every publication and subscription
+# (users_pub/users_sub, products_pub/products_sub, orders_pub/orders_sub).
+# Do not run it on a cluster whose replication is already healthy: it tears it
+# down, and the txn_log publication added by the API is lost until the API
+# re-adds it. It also does not fix schema mismatches between primary and replica.
+#
+# Usage: PG_PASSWORD=... ./scripts/setup_replication.sh [--yes]
 set -e
 PG_USER="${PG_USER:-postgres}"
 : "${PG_PASSWORD:?Set PG_PASSWORD before running this script}"
+
+if [ "${1:-}" != "--yes" ]; then
+    read -r -p "This drops and recreates all replication on ports 5433-5435. Continue? [y/N] " answer
+    case "$answer" in
+        y|Y|yes|YES) ;;
+        *) echo "Aborted."; exit 1 ;;
+    esac
+fi
 
 echo "=== Checking wal_level on all 3 nodes ==="
 for node_port in 5433:node1 5434:node2 5435:node3; do
